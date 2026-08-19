@@ -1,0 +1,6 @@
+[Unit]
+Description=AiHomeCloud local_backup secondary-drive unmount helper (host namespace)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/ahc-umount-nas.sh /mnt/ahc_backup

@@ -1,0 +1,54 @@
+// Allow the aihomecloud service account to: (a) manage a small set of known,
+// allowlisted systemd units it legitimately controls (telegram-bot-api, ssh,
+// and the three Telegram local-API setup-flow install helpers -- samba/nfs/
+// dlna/mount units are covered by 50-aihomecloud-storage.rules), including
+// enable/disable (a separate polkit action, manage-unit-files, from
+// start/stop/restart's manage-units) and daemon-reload after installing a
+// new unit file, and (b) power off / reboot the host via systemd-logind --
+// all without full sudo, which NoNewPrivileges=yes on this service blocks
+// outright regardless of sudoers. Power actions use `systemctl poweroff`/
+// `systemctl reboot` (talks to logind over D-Bus) rather than invoking
+// /usr/sbin/shutdown directly, so this rule is what authorizes them.
+//
+// The three ahc-telegram-* units exist because installing a binary to
+// /usr/local/bin, a unit file to /etc/systemd/system, or running apt-get are
+// raw file/package operations -- not syscall- or D-Bus-mediated the way
+// mount or systemctl start/stop are, so no capability or narrower polkit
+// action applies. Each runs a small, fixed, non-parameterized script (see
+// scripts/ahc-telegram-install-*.sh) reading from a known staging path under
+// /var/lib/aihomecloud (already this service's own ReadWritePaths=, so no
+// PrivateTmp visibility problem) that the app populates with zero privilege
+// needed, then asks systemd to run the actual privileged copy.
+//
+// ahc-factory-reset@{keep-media,wipe-media}.service: the two exact instances
+// the Factory Reset feature can start (POST /system/factory-reset) -- listed
+// by full instance name, not a prefix match, since there are only ever these
+// two. Same host-namespace-escape reasoning as ahc-wifi-install@: the service
+// can't remove its own systemd unit/polkit/sudoers/data or delete the app
+// user from inside itself under NoNewPrivileges=yes.
+polkit.addRule(function(action, subject) {
+    if (subject.user != "aihomecloud") return;
+
+    var allowedUnits = [
+        "telegram-bot-api.service",
+        "ssh.service",
+        "ahc-telegram-install-service-unit.service",
+        "ahc-telegram-apt-deps.service",
+        "ahc-factory-reset@keep-media.service",
+        "ahc-factory-reset@wipe-media.service"
+    ];
+    if ((action.id == "org.freedesktop.systemd1.manage-units" ||
+         action.id == "org.freedesktop.systemd1.manage-unit-files") &&
+        allowedUnits.indexOf(action.lookup("unit")) != -1) {
+        return polkit.Result.YES;
+    }
+
+    if (action.id == "org.freedesktop.systemd1.reload-daemon") {
+        return polkit.Result.YES;
+    }
+
+    if (action.id == "org.freedesktop.login1.power-off" ||
+        action.id == "org.freedesktop.login1.reboot") {
+        return polkit.Result.YES;
+    }
+});

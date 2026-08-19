@@ -1,0 +1,16 @@
+# Watches for a request written by the unprivileged backend and triggers the root helper.
+#
+# This replaces `sudo -n /usr/local/sbin/ahc-apply-device-name`, which could never work: the service unit
+# sets NoNewPrivileges=yes, and sudo is setuid, so every call failed with "the no new privileges
+# flag is set". Both features silently did nothing through the app. systemd is the right mechanism
+# here anyway — no setuid binary, no sudoers entry, and the privileged side is a unit file rather
+# than a shell grant.
+[Unit]
+Description=Watch for AiHomeCloud device-name requests
+
+[Path]
+PathChanged=/var/lib/aihomecloud/device-name.json
+Unit=ahc-apply-device-name.service
+
+[Install]
+WantedBy=multi-user.target

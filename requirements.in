@@ -1,0 +1,19 @@
+# Unpinned production dependencies — source of truth.
+# Run `pip-compile requirements.in -o requirements-arm64.txt` on the Cubie
+# to generate a reproducible ARM64 lock file.
+
+fastapi
+uvicorn[standard]
+python-json-logger
+PyJWT[crypto]
+cryptography
+passlib[bcrypt]
+bcrypt
+python-multipart
+psutil
+pydantic
+pydantic-settings
+aiofiles
+slowapi
+python-telegram-bot
+httpx

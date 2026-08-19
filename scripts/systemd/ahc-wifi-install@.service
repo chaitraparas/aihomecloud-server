@@ -1,0 +1,6 @@
+[Unit]
+Description=AiHomeCloud Wi-Fi connection profile installer (%I)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/ahc-wifi-install.sh %I

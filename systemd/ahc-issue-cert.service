@@ -1,0 +1,8 @@
+[Unit]
+Description=Issue AiHomeCloud TLS certificate and signed rotation statement
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/ahc-issue-cert
+# The helper re-derives every value it certifies from the live system; it does not trust the
+# request file for anything but the reissue reason (used for logging only).

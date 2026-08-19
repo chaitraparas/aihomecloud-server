@@ -1,0 +1,6 @@
+[Unit]
+Description=AiHomeCloud - disable a NAS service unit for boot persistence (%i)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/ahc-persist-unit.sh disable %i

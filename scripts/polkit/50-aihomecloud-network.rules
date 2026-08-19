@@ -1,0 +1,63 @@
+// Allow the aihomecloud service account to control the WiFi/network radio
+// (needed for the auto-disable-wifi-when-ethernet-active behavior in
+// wifi_manager.py) without full sudo or broad group membership. Previously
+// written to check subject.isInGroup("sudo"|"netdev") — the service runs as
+// a dedicated unprivileged "aihomecloud" system account (not in either
+// group, by design, since the earlier P0 hardening pass), so this never
+// actually worked; also was never deployed to the live rules.d directory at
+// all. Scoped to the specific radio-enable actions needed, not the full
+// org.freedesktop.NetworkManager.* wildcard (which also covers VPN control,
+// connection profile editing, etc. -- far more than this service needs).
+//
+// network-control + settings.modify.system added for the WiFi admin screen
+// (scan/connect/forget a network): network-control authorizes
+// `nmcli device wifi rescan` and `nmcli connection up/down`; settings.modify.
+// system authorizes `nmcli connection delete` (forget). Deliberately still
+// not the full NetworkManager.* wildcard.
+//
+// NOT org.freedesktop.NetworkManager.reload: `nmcli connection reload` looked
+// like it needed this action (per `pkaction --list`), but it's a dead end --
+// Settings.ReloadConnections is hardcoded root-only at the D-Bus policy level
+// (upstream bug 1921082), not polkit-gated at all. Granting this action here
+// changed nothing (confirmed live 2026-07-14: pkcheck reported YES, the real
+// nmcli call still said "access denied"). The reload now runs inside
+// ahc-wifi-install.sh instead, which already executes as root.
+polkit.addRule(function(action, subject) {
+    var allowedActions = [
+        "org.freedesktop.NetworkManager.enable-disable-network",
+        "org.freedesktop.NetworkManager.enable-disable-wifi",
+        "org.freedesktop.NetworkManager.enable-disable-wwan",
+        "org.freedesktop.NetworkManager.network-control",
+        "org.freedesktop.NetworkManager.settings.modify.system"
+    ];
+    if (allowedActions.indexOf(action.id) != -1 && subject.user == "aihomecloud") {
+        return polkit.Result.YES;
+    }
+});
+
+// Allow starting the ahc-wifi-install@ host-namespace helper unit (installs a staged
+// .nmconnection profile as root — see scripts/ahc-wifi-install.sh's own comment for why this
+// exists instead of sudo). Same manage-units action, same unit-prefix-matching shape as
+// 50-aihomecloud-storage.rules' ahc-mount@ allowance, kept in this file since the unit is
+// WiFi-specific rather than storage-specific.
+polkit.addRule(function(action, subject) {
+    var unit = action.lookup("unit");
+    if (action.id == "org.freedesktop.systemd1.manage-units" &&
+        subject.user == "aihomecloud" &&
+        unit && unit.indexOf("ahc-wifi-install@") == 0) {
+        return polkit.Result.YES;
+    }
+});
+
+// Allow starting the ahc-hotspot-enable@ / ahc-hotspot-disable host-namespace helper units (run
+// the actual `nmcli device wifi hotspot` / `connection down` as root — see wifi_manager.py's
+// hotspot-section comment: this is NOT a polkit-grantable action for a non-root caller,
+// confirmed live 2026-07-19, same class of restriction as Settings.ReloadConnections above).
+polkit.addRule(function(action, subject) {
+    var unit = action.lookup("unit");
+    if (action.id == "org.freedesktop.systemd1.manage-units" &&
+        subject.user == "aihomecloud" &&
+        unit && (unit.indexOf("ahc-hotspot-enable@") == 0 || unit == "ahc-hotspot-disable.service")) {
+        return polkit.Result.YES;
+    }
+});

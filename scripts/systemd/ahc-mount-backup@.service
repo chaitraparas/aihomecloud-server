@@ -1,0 +1,6 @@
+[Unit]
+Description=AiHomeCloud local_backup secondary-drive mount helper (host namespace, device=%I)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/ahc-mount-nas.sh %I /mnt/ahc_backup

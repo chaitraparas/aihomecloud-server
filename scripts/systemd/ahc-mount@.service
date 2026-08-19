@@ -1,0 +1,6 @@
+[Unit]
+Description=AiHomeCloud NAS mount helper (host namespace, device=%I)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/ahc-mount-nas.sh %I /srv/nas

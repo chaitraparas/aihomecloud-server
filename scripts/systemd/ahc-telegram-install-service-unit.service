@@ -1,0 +1,6 @@
+[Unit]
+Description=AiHomeCloud Telegram local-API systemd unit install helper (host namespace)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/ahc-telegram-install-service-unit.sh

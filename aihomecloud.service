@@ -1,0 +1,64 @@
+﻿[Unit]
+Description=AiHomeCloud Backend API
+After=network.target
+
+[Service]
+SyslogIdentifier=aihomecloud
+Type=simple
+User=aihomecloud
+Group=aihomecloud
+WorkingDirectory=/opt/aihomecloud/backend
+ExecStartPre=/bin/sh -c 'fuser -k 8443/tcp 2>/dev/null || true'
+ExecStart=/opt/aihomecloud/backend/.venv/bin/python -m app.main
+Restart=always
+RestartSec=5
+PrivateTmp=yes
+NoNewPrivileges=yes
+# CAP_NET_BIND_SERVICE is required for the port-80 explainer page, and must appear in BOTH lines:
+# ambient capabilities cannot exceed the bounding set, so listing it only above silently changes
+# nothing and the bind fails EACCES.
+#
+# CAP_SYS_ADMIN was removed 2026-08-08 (audit H-5). It was the broadest capability in the kernel —
+# close enough to root that holding it made most of the hardening below decorative: with it, this
+# service could remount the "read-only" filesystem ProtectSystem=strict installs, so the sandbox
+# was one syscall from being lifted by the process it was meant to contain.
+#
+# Nothing used it. Every mount and unmount goes through ahc-mount-nas.sh / ahc-umount-nas.sh, which
+# run as root in the host namespace via polkit-authorized oneshot units — the service starts a
+# unit, it does not call mount(2) itself, so its own capabilities were never part of that path.
+#
+# Verified on the Rock Pi 4A rather than reasoned about: with both removed the service starts
+# clean, /api/health answers, the port-80 explainer still binds (which is the one thing that
+# genuinely needs a capability), and the journal logs no warning. CapEff went 0x200400 -> 0x400.
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+ProtectSystem=strict
+ReadWritePaths=/var/lib/aihomecloud /srv/nas /mnt/ahc_backup /opt/aihomecloud/update_staging /opt/aihomecloud/update_status
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+# @mount went with CAP_SYS_ADMIN: those syscalls could not succeed without it anyway, so allowing
+# them only widened the filter for no reachable behaviour. Verified on hardware alongside the
+# capability removal.
+SystemCallFilter=@system-service
+
+# Resource limits
+LimitNOFILE=65536
+MemoryMax=1G
+CPUQuota=80%
+TasksMax=256
+
+# Environment overrides (edit as needed)
+# NOTE: Do NOT hardcode `AHC_JWT_SECRET` here. Use one of the following safer options:
+# - Provide `AHC_JWT_SECRET` as an environment variable from a secure system-wide secret manager.
+# - Place the secret in `/var/lib/aihomecloud/jwt_secret` (file is read by the app when no env var provided).
+# - If you need to set environment variables from a file, use `EnvironmentFile=` with a file owned by root and mode 600.
+# The service intentionally avoids embedding the JWT secret in this unit file to reduce accidental leaks.
+Environment=AHC_DEVICE_SERIAL=AHC-A7A-2025-001
+Environment=AHC_PAIRING_KEY=your-pairing-key
+Environment=AHC_NAS_ROOT=/srv/nas
+Environment=AHC_DATA_DIR=/var/lib/aihomecloud
+Environment=AHC_TLS_ENABLED=true
+# Optional extra CORS origins (comma-separated). Leave empty to keep defaults:
+# http://localhost,http://localhost:3000
+
+[Install]
+WantedBy=multi-user.target

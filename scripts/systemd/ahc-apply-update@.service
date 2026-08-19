@@ -1,0 +1,18 @@
+[Unit]
+Description=AiHomeCloud backend update apply (version=%i)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/ahc-apply-backend-update.sh %i
+
+# This unit runs `pip install` on a caller-supplied bundle, which means it executes arbitrary
+# setup.py / build-backend code. It runs as root because it must chown releases, flip the symlink
+# and restart the service — so the code it executes has to be prevented from GAINING privilege
+# beyond the unprivileged user the script drops to.
+#
+# NoNewPrivileges=yes is what makes that stick: it blocks setuid transitions for the whole process
+# tree, so nothing pip runs can escalate back up through sudo. Verified live on the Rock Pi 4A —
+# without this line a child dropped to the service user ran `sudo -n lsblk` fine; with it, sudo is
+# refused. The script pairs this with runuser, which is not setuid and reads no sudoers policy.
+# (2026-08-08 audit, C-5.)
+NoNewPrivileges=yes

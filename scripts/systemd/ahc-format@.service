@@ -1,0 +1,6 @@
+[Unit]
+Description=AiHomeCloud NAS format helper (host namespace, partition=%I)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/ahc-format-nas.sh %I

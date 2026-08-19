@@ -1,0 +1,22 @@
+# Legacy-format (.pkla) equivalent of 50-aihomecloud-storage.rules, for boards whose polkit is
+# older than 0.106 and can't load the .rules/JavaScript engine at all (found live 2026-07-14 on a
+# Debian 11 board: polkit 0.105, every .rules file silently ignored, every systemctl/nmcli call
+# from the backend failing "Interactive authentication required" despite the .rules files being
+# correctly installed). Deployed alongside the .rules files, not instead of them -- whichever
+# mechanism the local polkit build actually supports takes effect; the other is inert.
+#
+# KNOWN SCOPE TRADEOFF: the .rules version restricts this to a specific unit allowlist (smbd,
+# nmbd, nfs-kernel-server, minidlna(d), ssh, ahc-umount, ahc-umount-backup, ahc-mount@*,
+# ahc-mount-backup@*) via action.lookup("unit") --
+# the legacy local-authority format has no per-parameter matching, only whole-action grants, so
+# this .pkla version authorizes org.freedesktop.systemd1.manage-units for ANY unit, not just the
+# allowlisted ones. This is a hard limitation of the old format, not a simplification of choice --
+# there is no narrower policy expressible here. The aihomecloud account already holds several
+# other broad NOPASSWD sudoers grants (mount/umount, mkfs.ext4, shutdown/reboot), so this doesn't
+# introduce a new class of risk, but it is a real broadening versus the .rules file's intent.
+[aihomecloud storage/DLNA/NFS/SMB unit management]
+Identity=unix-user:aihomecloud
+Action=org.freedesktop.systemd1.manage-units
+ResultAny=yes
+ResultInactive=yes
+ResultActive=yes

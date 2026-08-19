@@ -1,0 +1,16 @@
+# Legacy-format (.pkla) equivalent of 51-aihomecloud-udisks.rules — see 50-aihomecloud-storage.pkla
+# for why this exists. No scope tradeoff: each glob below matches exactly the same action pair the
+# .rules file allowlists (power-off-drive/-system, eject-media/-system) and nothing else.
+[aihomecloud udisks power-off]
+Identity=unix-user:aihomecloud
+Action=org.freedesktop.udisks2.power-off-drive*
+ResultAny=yes
+ResultInactive=yes
+ResultActive=yes
+
+[aihomecloud udisks eject]
+Identity=unix-user:aihomecloud
+Action=org.freedesktop.udisks2.eject-media*
+ResultAny=yes
+ResultInactive=yes
+ResultActive=yes

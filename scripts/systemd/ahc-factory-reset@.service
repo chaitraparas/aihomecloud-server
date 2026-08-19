@@ -1,0 +1,6 @@
+[Unit]
+Description=AiHomeCloud Factory Reset (%I)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/ahc-factory-reset.sh --purge --mode=%i

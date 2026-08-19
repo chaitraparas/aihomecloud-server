@@ -1,0 +1,6 @@
+[Unit]
+Description=AiHomeCloud WiFi hotspot enable (%I)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/ahc-hotspot.sh %I

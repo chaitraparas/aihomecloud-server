@@ -1,0 +1,7 @@
+[Unit]
+Description=Apply AiHomeCloud maintenance-window
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/ahc-apply-maintenance-window
+# The helper re-validates the request file itself; it does not trust the writer.

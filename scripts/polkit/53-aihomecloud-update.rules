@@ -1,0 +1,24 @@
+// Allow the aihomecloud service account to trigger the backend-update-apply oneshot unit
+// (ahc-apply-update@<version>.service) without full sudo. Same escape-hatch shape as
+// 50-aihomecloud-storage.rules' ahc-mount@/ahc-enable-unit@ grants — the main
+// aihomecloud.service runs under ProtectSystem=strict + NoNewPrivileges=yes, so it cannot
+// restart itself, flip the /opt/aihomecloud/backend symlink, or write outside its own
+// ReadWritePaths= from inside its own process; the actual update-apply work happens in a
+// separate oneshot unit running as genuine root instead (app/routes/system_routes.py's
+// POST /system/update triggers it, then returns immediately — the requesting process is the
+// one about to be restarted, so it can't wait for its own replacement).
+//
+// No .pkla counterpart: the legacy-polkit .pkla files already grant
+// org.freedesktop.systemd1.manage-units broadly for any unit (see
+// 50-aihomecloud-storage.pkla's own comment on why the old format can't express a per-unit
+// allowlist) -- a board relying on the legacy format already covers ahc-apply-update@* through
+// one of those existing files. This .rules file only narrows the grant for modern polkit.
+polkit.addRule(function(action, subject) {
+    var unit = action.lookup("unit");
+    var hasAllowedPrefix = unit && unit.indexOf("ahc-apply-update@") == 0;
+    if (action.id == "org.freedesktop.systemd1.manage-units" &&
+        subject.user == "aihomecloud" &&
+        hasAllowedPrefix) {
+        return polkit.Result.YES;
+    }
+});

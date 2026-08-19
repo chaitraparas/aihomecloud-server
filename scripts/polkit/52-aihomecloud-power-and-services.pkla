@@ -1,0 +1,29 @@
+# Legacy-format (.pkla) equivalent of 52-aihomecloud-power-and-services.rules — see
+# 50-aihomecloud-storage.pkla for why this exists. Doesn't repeat a manage-units grant (already
+# covered, more broadly, by 50-aihomecloud-storage.pkla in this same directory) — only the actions
+# unique to this file. SCOPE TRADEOFF (same root cause as storage.pkla): manage-unit-files can't
+# be restricted to the 5-unit allowlist the .rules file uses, so this grants it for any unit.
+#
+# The two ahc-factory-reset@{keep-media,wipe-media} instances the .rules file allowlists by exact
+# name need no new stanza here either — 50-aihomecloud-storage.pkla's broad manage-units grant
+# already covers starting them on a legacy-format (polkit <0.106) board.
+[aihomecloud unit file management]
+Identity=unix-user:aihomecloud
+Action=org.freedesktop.systemd1.manage-unit-files
+ResultAny=yes
+ResultInactive=yes
+ResultActive=yes
+
+[aihomecloud daemon reload]
+Identity=unix-user:aihomecloud
+Action=org.freedesktop.systemd1.reload-daemon
+ResultAny=yes
+ResultInactive=yes
+ResultActive=yes
+
+[aihomecloud power management]
+Identity=unix-user:aihomecloud
+Action=org.freedesktop.login1.power-off;org.freedesktop.login1.reboot
+ResultAny=yes
+ResultInactive=yes
+ResultActive=yes

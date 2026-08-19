@@ -1,0 +1,7 @@
+[Unit]
+Description=AiHomeCloud Telegram local-API build-dependency install (host namespace)
+
+[Service]
+Type=oneshot
+TimeoutStartSec=300
+ExecStart=/usr/bin/apt-get install -y --no-install-recommends cmake g++ libssl-dev zlib1g-dev gperf

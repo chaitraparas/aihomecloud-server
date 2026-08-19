@@ -1,0 +1,6 @@
+[Unit]
+Description=AiHomeCloud WiFi hotspot disable
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/nmcli connection down ahc-hotspot

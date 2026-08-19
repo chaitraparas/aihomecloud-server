@@ -1,0 +1,7 @@
+[Unit]
+Description=Apply AiHomeCloud device-name
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/ahc-apply-device-name
+# The helper re-validates the request file itself; it does not trust the writer.

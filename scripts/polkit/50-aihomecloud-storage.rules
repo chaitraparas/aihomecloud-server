@@ -1,0 +1,54 @@
+// Allow the aihomecloud service account to start/stop/enable the specific
+// NAS-adjacent services it manages during mount/eject flows, without full sudo.
+// Also allows the host-namespace escape units (ahc-mount@*, ahc-umount,
+// ahc-enable-unit@*, ahc-disable-unit@*) — these exist because
+// ProtectSystem=strict + ReadWritePaths= puts the main service in a private
+// mount namespace where its own mount/umount syscalls cannot affect the real
+// host-wide mount table, and separately (for ahc-{enable,disable}-unit@)
+// because SysV-init-compat units (smbd/nmbd/nfs-kernel-server on Debian 11)
+// shell out to `update-rc.d` for systemctl enable/disable, which does its own
+// root check independent of this polkit grant — found live 2026-07-14, a
+// direct `org.freedesktop.systemd1.manage-unit-files` grant for these units
+// (previously here) let the D-Bus call through but update-rc.d itself still
+// returned "Permission denied" for the non-root aihomecloud caller. Removed
+// that ineffective grant; enable/disable for these units now routes through
+// the oneshot units below instead, which run the same update-rc.d-backed
+// systemctl call as genuine root.
+polkit.addRule(function(action, subject) {
+    // Both nfs-kernel-server (used by storage_helpers.py's stop_nas_services) and
+    // nfs-server (the canonical unit it's an alias of, used by service_routes.py's
+    // toggle — see that file's comment for why the alias isn't used there too) are
+    // listed since both names are genuinely in use for the same underlying unit.
+    // ssh.service: SERVICE_UNITS["ssh"] in service_routes.py has referenced this unit
+    // since before this rule file existed, but it was never actually added to this
+    // allowlist -- found live 2026-07-15 while auditing this file for an unrelated fix.
+    // The app's SSH on/off toggle has likely been silently failing ("Interactive
+    // authentication required") for as long as it's existed. Canonical name, not the
+    // "sshd.service" alias (systemctl show ssh -p Id,Names -> Id=ssh.service,
+    // Names=ssh.service sshd.service) -- same alias-vs-canonical distinction that
+    // mattered for nfs-server/nfs-kernel-server elsewhere in this file's history.
+    // ahc-mount-backup@*/ahc-umount-backup.service: local_backup.py's secondary-drive
+    // mount/unmount, same escape-hatch reason as ahc-mount@/ahc-umount above — a
+    // separate unit template because ahc-mount@.service hardcodes /srv/nas as its
+    // mount target, not because the underlying mount/umount scripts differ.
+    var allowedUnits = ["smbd.service", "nmbd.service", "nfs-kernel-server.service", "nfs-server.service", "minidlna.service", "minidlnad.service", "ssh.service", "ahc-umount.service", "ahc-umount-backup.service"];
+    var unit = action.lookup("unit");
+    var hasAllowedPrefix = unit && (
+        unit.indexOf("ahc-mount@") == 0 ||
+        unit.indexOf("ahc-mount-backup@") == 0 ||
+        unit.indexOf("ahc-enable-unit@") == 0 ||
+        unit.indexOf("ahc-disable-unit@") == 0 ||
+        // ahc-partition-format@/ahc-format@: same host-namespace escape hatch, for
+        // smart-activate's sgdisk+mkfs.ext4 and the manual /format endpoint's mkfs.ext4 —
+        // found live 2026-08-02 that both had only ever been attempted as a direct (always-
+        // failing) subprocess call, never actually wired to this pattern despite it already
+        // being the established one for mount/umount above.
+        unit.indexOf("ahc-partition-format@") == 0 ||
+        unit.indexOf("ahc-format@") == 0
+    );
+    if (action.id == "org.freedesktop.systemd1.manage-units" &&
+        subject.user == "aihomecloud" &&
+        (allowedUnits.indexOf(unit) != -1 || hasAllowedPrefix)) {
+        return polkit.Result.YES;
+    }
+});

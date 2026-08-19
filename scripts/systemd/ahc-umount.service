@@ -1,0 +1,6 @@
+[Unit]
+Description=AiHomeCloud NAS unmount helper (host namespace)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/ahc-umount-nas.sh /srv/nas

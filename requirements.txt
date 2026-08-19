@@ -1,0 +1,42 @@
+# Security pins bumped 2026-08-08 after pip-audit found 18 CVEs across these three:
+#   python-multipart 0.0.22 -> 0.0.31  (5 CVEs; this parses the multipart upload path)
+#   starlette        0.52.1 -> 1.3.1   (7 CVEs; major bump, FastAPI 0.139 has no upper bound and
+#                                       the full suite passes — verified, not assumed)
+#   cryptography     46.0.6 -> 50.0.0  (6 CVEs)
+# Production dependencies — pinned for reproducible builds.
+# Verified on ARM64 Ubuntu 24 (Cubie A7Z) and x86_64 Ubuntu 24 Noble (HP thin client,
+# 2026-07-17) — none of these packages have architecture-specific behavior; the two with
+# native extensions (cryptography, bcrypt) both ship mature manylinux x86_64 + aarch64 wheels.
+# To update: run `pip install pip-tools` then `pip-compile` on the device.
+
+fastapi>=0.110.0
+uvicorn[standard]==0.41.0
+h11==0.16.0
+python-json-logger==2.0.7
+PyJWT[crypto]==2.13.0
+cryptography==50.0.0
+passlib[bcrypt]==1.7.4
+bcrypt==4.0.1
+python-multipart==0.0.31
+psutil==6.1.1
+pydantic==2.10.4
+pydantic-settings==2.7.1
+aiofiles==24.1.0
+starlette==1.3.1
+slowapi==0.1.9
+python-telegram-bot==21.3
+anyio==4.12.1
+# uvicorn[standard] and python-telegram-bot transitive deps
+httptools==0.7.1
+httpx==0.28.1
+websockets==16.0
+
+# Image processing — perceptual hash for near-duplicate detection
+Pillow>=12.3.0
+imagehash>=4.3.1
+
+# Dev / test dependencies
+pytest==9.1.1
+pytest-asyncio==1.4.0
+pytest-cov==6.1.1
+freezegun==1.5.5

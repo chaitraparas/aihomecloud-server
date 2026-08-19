@@ -1,0 +1,37 @@
+# Legacy-format (.pkla) equivalent of 50-aihomecloud-network.rules — see that file's comment and
+# 50-aihomecloud-storage.pkla's header for why this exists (polkit < 0.106 can't load .rules at
+# all). No scope tradeoff here: the glob below matches exactly the same 3 actions the .rules file
+# allowlists (enable-disable-network/wifi/wwan) and nothing else — there's no sibling
+# NetworkManager.enable-disable-* action this would over-grant.
+[aihomecloud network radio control]
+Identity=unix-user:aihomecloud
+Action=org.freedesktop.NetworkManager.enable-disable-*
+ResultAny=yes
+ResultInactive=yes
+ResultActive=yes
+
+# network-control + settings.modify.system — added for the WiFi admin screen
+# (scan/connect/forget). Two separate exact-action stanzas, not a glob: these
+# don't share a common prefix with each other or with enable-disable-*, and
+# .pkla has no way to express "these two specific actions" in one glob
+# without also matching unrelated NetworkManager.* actions.
+[aihomecloud network-control]
+Identity=unix-user:aihomecloud
+Action=org.freedesktop.NetworkManager.network-control
+ResultAny=yes
+ResultInactive=yes
+ResultActive=yes
+
+[aihomecloud network settings-modify-system]
+Identity=unix-user:aihomecloud
+Action=org.freedesktop.NetworkManager.settings.modify.system
+ResultAny=yes
+ResultInactive=yes
+ResultActive=yes
+
+# NOT org.freedesktop.NetworkManager.reload -- looked necessary for `nmcli connection
+# reload` per `pkaction --list`, but that action is a dead end: Settings.ReloadConnections
+# is hardcoded root-only at the D-Bus policy level (upstream bug 1921082), not polkit-gated
+# at all. Granting it here changed nothing live (2026-07-14): pkcheck reported YES, the real
+# nmcli call still said "access denied". Reload now runs inside ahc-wifi-install.sh instead,
+# which already executes as root.

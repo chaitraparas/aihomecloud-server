@@ -1,0 +1,13 @@
+// Allow the aihomecloud service account to power off/eject drives via
+// udisksctl during the storage-eject flow, without full sudo.
+polkit.addRule(function(action, subject) {
+    var allowedActions = [
+        "org.freedesktop.udisks2.power-off-drive",
+        "org.freedesktop.udisks2.power-off-drive-system",
+        "org.freedesktop.udisks2.eject-media",
+        "org.freedesktop.udisks2.eject-media-system"
+    ];
+    if (allowedActions.indexOf(action.id) != -1 && subject.user == "aihomecloud") {
+        return polkit.Result.YES;
+    }
+});

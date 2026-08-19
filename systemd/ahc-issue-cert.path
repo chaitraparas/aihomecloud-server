@@ -1,0 +1,13 @@
+# Watches for a reissue request written by the unprivileged backend and triggers the root
+# cert-issuance helper. Same shape as ahc-apply-device-name.path — the service can never generate
+# its own TLS key/certificate under H-11 (that is the whole point: a service that could choose
+# what gets attested could get a valid signature over a key it chose), so it can only ask.
+[Unit]
+Description=Watch for AiHomeCloud certificate reissue requests
+
+[Path]
+PathChanged=/var/lib/aihomecloud/cert-request.json
+Unit=ahc-issue-cert.service
+
+[Install]
+WantedBy=multi-user.target

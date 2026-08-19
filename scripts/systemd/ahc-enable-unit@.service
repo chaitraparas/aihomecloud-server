@@ -1,0 +1,6 @@
+[Unit]
+Description=AiHomeCloud - enable a NAS service unit for boot persistence (%i)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/ahc-persist-unit.sh enable %i

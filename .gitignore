@@ -1,0 +1,36 @@
+# Python
+.venv/
+.venv-macos/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Backups / temp from live deploys
+*.bak
+*.bak-*
+*.tmp
+*~
+
+# Local data / runtime state (secrets live here on the board, never commit)
+var/
+data/
+*.sqlite
+*.sqlite3
+*.db
+
+# Env / secrets
+.env
+.env.*
+*.key
+*.pem
+
+# Generated at Android build time (bundleBackendForInstaller) -- tracks the app's versionName,
+# never hand-edited or committed.
+app/VERSION
+
+# Staged from clients/web/ (proprietary, outside backend/) by scripts/stage_webapp.sh --
+# source of truth lives there, this directory is a build output.
+app/static/webapp/
