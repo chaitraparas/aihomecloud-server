@@ -33,6 +33,7 @@ from typing import AsyncIterator, Optional
 
 from fastapi import HTTPException, status
 
+from . import platform_profile
 from . import store
 from . import media_index
 from .config import settings
@@ -61,8 +62,22 @@ def _require_external_storage() -> None:
 
     If nas_root is just a directory on the SD card, reject file operations so
     users don't accidentally browse OS files.
+
+    Windows-only: skipped entirely, not just "checked differently". `Path.is_mount()`
+    on Windows only ever returns True for a drive root (e.g. `C:\\`) — never for a
+    subfolder, which is exactly what `_default_nas_root()` in config.py sets by
+    default (`C:\\AiHomeCloud\\Data`) until a real storage-selection installer step
+    exists (see that function's own docstring). Confirmed live 2026-08-20: every
+    upload on a real Windows install failed with 503 here, silently, with the file
+    fully transferred client-side first — this guard was rejecting every write on
+    every Windows board that has ever run this code. The SD-card-vs-USB distinction
+    this check exists for is a Linux SBC concern; a Windows NAS writing to its
+    system drive is the normal, intended configuration, not the mistake this guard
+    was written to catch.
     """
     if settings.skip_mount_check:
+        return
+    if platform_profile.host_kind() == platform_profile.HostKind.WINDOWS:
         return
     nas = settings.nas_root
     if not nas.is_mount():

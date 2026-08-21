@@ -26,7 +26,7 @@ ALLOW_FILES=(
     LICENSE README.md .gitignore
     requirements.txt requirements-arm64.txt requirements.in
     pytest.ini run_tests.sh
-    install.sh deploy.sh aihomecloud.service
+    install.sh install_windows.ps1 deploy.sh aihomecloud.service
     api-contracts.md architecture.md changelog.md setup-instructions.md
 )
 # Excluded even though they sit under an allowlisted dir: scripts/stage_webapp.sh

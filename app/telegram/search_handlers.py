@@ -629,6 +629,9 @@ def _exact_set_markup(entry: dict, idx: int, total: int):
             f"🗑 Del {c['owner']} copy", callback_data=f"dupexactdel:{hash_prefix}:{i}"
         ))
     rows.append(del_row)
+    rows.append([InlineKeyboardButton(
+        "✅ Keep all, don't ask again", callback_data=f"dupexactkeep:{hash_prefix}"
+    )])
     nav = [InlineKeyboardButton("⏭ Skip", callback_data=f"dupexact:{idx + 1}")]
     if idx > 0:
         nav.insert(0, InlineKeyboardButton("◀", callback_data=f"dupexact:{idx - 1}"))
@@ -732,6 +735,57 @@ async def _handle_dupexactdel_callback(update, context) -> None:  # type: ignore
     new_idx = max(0, min(new_idx, len(updated) - 1))
     await query.edit_message_text(
         f"✅ Deleted <code>{target_path.name}</code>\n\n"
+        + _exact_set_text(updated[new_idx], new_idx, len(updated)),
+        parse_mode="HTML",
+        reply_markup=_exact_set_markup(updated[new_idx], new_idx, len(updated)),
+    )
+
+
+async def _handle_dupexactkeep_callback(update, context) -> None:  # type: ignore[type-arg]
+    """Mark an exact-duplicate set as 'keep all' -- whitelist the hash and remove from results.
+
+    Without this, an intentional duplicate (e.g. saved via /keep, or shared to family)
+    resurfaces in every nightly rescan and every evening report forever, with no way to
+    permanently silence it. Mirrors the similar-image "Keep both" whitelist.
+    """
+    query = update.callback_query
+    await query.answer()
+    parts = query.data.split(":")
+    if len(parts) != 2:
+        await query.edit_message_text("❌ Invalid data.")
+        return
+    hash_prefix = parts[1]
+
+    exact = await _store.get_value("duplicate_scan_results", default=[])
+    entry = next((r for r in exact if r.get("hash", "").startswith(hash_prefix)), None)
+    if entry is None:
+        await query.edit_message_text("⚠️ Set already resolved.")
+        return
+    full_hash = entry["hash"]
+
+    exact_whitelist = list(await _store.get_value("duplicate_exact_whitelist", default=[]))
+    if full_hash not in exact_whitelist:
+        exact_whitelist.append(full_hash)
+        await _store.set_value("duplicate_exact_whitelist", exact_whitelist)
+
+    def _prune(stored: list) -> list:
+        return [r for r in stored if r.get("hash") != full_hash]
+
+    await _store.atomic_update("duplicate_scan_results", _prune, default=[])
+    updated = await _store.get_value("duplicate_scan_results", default=[])
+
+    if not updated:
+        await query.edit_message_text(
+            "✅ <b>Kept all copies.</b>\n\nAll exact duplicates reviewed! 🎉",
+            parse_mode="HTML",
+        )
+        return
+    new_idx = next(
+        (i for i, r in enumerate(updated) if r.get("hash", "").startswith(hash_prefix)), 0
+    )
+    new_idx = max(0, min(new_idx, len(updated) - 1))
+    await query.edit_message_text(
+        f"✅ <b>Kept all copies.</b> Won't appear in future scans unless files change.\n\n"
         + _exact_set_text(updated[new_idx], new_idx, len(updated)),
         parse_mode="HTML",
         reply_markup=_exact_set_markup(updated[new_idx], new_idx, len(updated)),

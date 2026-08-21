@@ -12,9 +12,46 @@ from typing import Any
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings
 
+from . import platform_profile
+
 JWT_SECRET_FILE = Path("/var/lib/aihomecloud/jwt_secret")
 PAIRING_KEY_FILE = Path("/var/lib/aihomecloud/pairing_key")
 DEFAULT_CORS_ORIGINS = ["http://localhost", "http://localhost:3000"]
+
+
+def _default_data_dir() -> Path:
+    """
+    App state (config, secrets, TLS, identity, jobs) — never user media, see _default_nas_root().
+
+    Windows has no `/var/lib` equivalent; the ProgramData convention is the direct analogue
+    (per-machine, not per-user, survives a user profile deletion — matches this directory's own
+    intent). Falls back to a literal `C:\\ProgramData` if the env var is somehow unset, which
+    practically never happens on real Windows but keeps this from raising during import.
+    """
+    if platform_profile.host_kind() == platform_profile.HostKind.WINDOWS:
+        return Path(os.environ.get("PROGRAMDATA", r"C:\ProgramData")) / "AiHomeCloud"
+    return Path("/var/lib/aihomecloud")
+
+
+def _default_nas_root() -> Path:
+    """
+    User media. Deliberately NOT nested under _default_data_dir() on any platform — the whole
+    point of the split is that uninstalling the app must never risk the user's files, and a
+    nested path invites exactly that mistake later. This is a placeholder default; a real
+    Windows install always overrides it via AHC_NAS_ROOT once the installer's storage-selection
+    step runs (same pattern install.sh already uses for AHC_DEVICE_SERIAL/AHC_PAIRING_KEY).
+    """
+    if platform_profile.host_kind() == platform_profile.HostKind.WINDOWS:
+        return Path(r"C:\AiHomeCloud\Data")
+    return Path("/srv/nas")
+
+
+def _default_backup_root() -> Path:
+    """Secondary/backup drive default — see nas_root's docstring on why this stays a sibling,
+    not a subdirectory, of it: a single physical failure of the primary must not take out both."""
+    if platform_profile.host_kind() == platform_profile.HostKind.WINDOWS:
+        return Path(r"C:\AiHomeCloud\Backup")
+    return Path("/mnt/ahc_backup")
 
 
 def _read_bundled_backend_version() -> str:
@@ -178,7 +215,7 @@ class Settings(BaseSettings):
     pairing_key: str = ""  # auto-generated and persisted if empty
 
     # ── Storage ───────────────────────────────────────────────────────────────
-    nas_root: Path = Path("/srv/nas")
+    nas_root: Path = Field(default_factory=_default_nas_root)
     personal_base: str = "personal"
     family_dir: str = "family"
     entertainment_dir: str = "entertainment"
@@ -189,7 +226,7 @@ class Settings(BaseSettings):
     # card, not another full-size NAS drive — see docs on why this is a separate
     # mountpoint from nas_root, not a subdirectory of it: the whole point is that a
     # single physical failure of the primary drive must not also take out the copy).
-    backup_root: Path = Path("/mnt/ahc_backup")
+    backup_root: Path = Field(default_factory=_default_backup_root)
 
     # ── Upload ────────────────────────────────────────────────────────────────
     upload_chunk_size: int = 4 * 1024 * 1024  # 4 MB — fewer async cycles on ARM
@@ -278,7 +315,7 @@ class Settings(BaseSettings):
 
 
     # ── Data (JSON-file-based persistence for users, services, etc.) ─────────
-    data_dir: Path = Path("/var/lib/aihomecloud")
+    data_dir: Path = Field(default_factory=_default_data_dir)
 
     # ── Backend self-update (distinct from app_update_dir below, which serves the ANDROID
     # APK) -- POST /system/update stages an uploaded backend_bundle.tar here, then triggers
@@ -385,6 +422,13 @@ class Settings(BaseSettings):
     def activity_log_file(self) -> Path:
         """JSON file for the persisted, queryable activity/audit trail (app/audit.py)."""
         return self.data_dir / "activity_log.json"
+
+    @property
+    def funnel_events_file(self) -> Path:
+        """JSON file for activation-funnel telemetry (app/routes/events_routes.py). Local
+        to this board only — see kb/telemetry_architecture_decision.md for why: this file
+        never leaves the house on its own, matching the product's core privacy promise."""
+        return self.data_dir / "funnel_events.json"
 
     @field_validator("cors_origins", mode="before")
     @classmethod

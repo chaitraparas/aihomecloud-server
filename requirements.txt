@@ -35,6 +35,23 @@ websockets==16.0
 Pillow>=12.3.0
 imagehash>=4.3.1
 
+# In-process mDNS/DNS-SD advertisement (app/mdns_advertiser.py) — cross-platform alternative
+# to avahi-daemon, needed for Windows (no avahi there); not yet wired into the Linux startup
+# path by default, see that module's docstring. Pure Python, no heavy native deps, so unlike
+# the semantic-search packages this one just lives in the base requirements.
+zeroconf==0.150.0
+
+# DPAPI-backed secret protection (app/windows_secrets.py) — Windows only. The environment
+# marker means Linux boards' pip install silently skips this line; found missing entirely
+# 2026-08-20 during the first-ever real run of install_windows.ps1 (ModuleNotFoundError,
+# and a separate bug meant the installer reported success anyway — both fixed same session).
+pywin32==312; sys_platform == "win32"
+
+# System-tray helper (app/windows_tray.py) — Windows only, same marker pattern as pywin32
+# above. The SBCs are headless (no desktop session), so this has no Linux equivalent and must
+# never be pulled onto those boards.
+pystray==0.19.5; sys_platform == "win32"
+
 # Dev / test dependencies
 pytest==9.1.1
 pytest-asyncio==1.4.0

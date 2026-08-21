@@ -42,7 +42,7 @@ from app.telegram.search_handlers import (  # noqa: F401
     _handle_status, _handle_cancel, _handle_whoami, _handle_storage_cmd,
     _handle_duplicates, _handle_scan,
     _handle_dupskip_callback,
-    _handle_dupexact_callback, _handle_dupexactdel_callback,
+    _handle_dupexact_callback, _handle_dupexactdel_callback, _handle_dupexactkeep_callback,
     _handle_dupauto_callback, _handle_dups_summary_callback, _handle_dupscan_callback,
     _handle_dupsim_callback, _handle_dupsimboth_callback, _handle_dupsimdel_callback,
     _handle_dupsimkeepboth_callback,
@@ -169,6 +169,9 @@ async def start_bot() -> None:
         )
         _application.add_handler(
             CallbackQueryHandler(_handle_dupexactdel_callback, pattern=r"^dupexactdel:")
+        )
+        _application.add_handler(
+            CallbackQueryHandler(_handle_dupexactkeep_callback, pattern=r"^dupexactkeep:")
         )
         _application.add_handler(
             CallbackQueryHandler(_handle_dupauto_callback, pattern=r"^dupauto:")

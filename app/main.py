@@ -57,6 +57,7 @@ from .routes import (
     activity_routes,
     local_backup_routes,
     bluetooth_routes,
+    events_routes,
 )
 
 from datetime import datetime, timedelta
@@ -230,8 +231,20 @@ async def _run_nightly_local_backup_sync() -> None:
             logger.error("Nightly local_backup sync failed: %s", exc)
 
 
+def _similar_set_key(entry: dict) -> list:
+    """Stable identity for a similar-image group -- its members' phashes, order-independent."""
+    return sorted(c.get("phash_hex", "") for c in entry.get("copies", []))
+
+
 async def _send_evening_duplicate_report() -> None:
-    """Sleep until 6:00 PM then send the Telegram duplicate report, repeat daily."""
+    """Sleep until 6:00 PM then send the Telegram duplicate report, repeat daily.
+
+    Only reports sets NOT already reported yesterday -- a set left unresolved (e.g. an
+    intentional duplicate nobody has whitelisted, or a screenshot pHash false-positive)
+    would otherwise repeat verbatim every single evening forever. "Already reported" is
+    recomputed from the full current scan each run, so a resolved/whitelisted set drops
+    out on its own without needing separate cleanup.
+    """
     while True:
         try:
             now = datetime.now()
@@ -244,10 +257,35 @@ async def _send_evening_duplicate_report() -> None:
             exact = await _store_mod.get_value("duplicate_scan_results", default=[])
             similar = await _store_mod.get_value("similar_scan_results", default=[])
             if not exact and not similar:
+                await _store_mod.set_value("duplicate_report_notified_exact", [])
+                await _store_mod.set_value("duplicate_report_notified_similar", [])
+                continue
+
+            notified_exact = set(
+                await _store_mod.get_value("duplicate_report_notified_exact", default=[])
+            )
+            notified_similar = {
+                tuple(k) for k in
+                await _store_mod.get_value("duplicate_report_notified_similar", default=[])
+            }
+            new_exact = [e for e in exact if e.get("hash") not in notified_exact]
+            new_similar = [s for s in similar if tuple(_similar_set_key(s)) not in notified_similar]
+
+            # Remember everything currently open (not just what's new) so tomorrow's
+            # diff is accurate, and so resolved sets naturally age out of "notified".
+            await _store_mod.set_value(
+                "duplicate_report_notified_exact", [e.get("hash") for e in exact]
+            )
+            await _store_mod.set_value(
+                "duplicate_report_notified_similar", [_similar_set_key(s) for s in similar]
+            )
+
+            if not new_exact and not new_similar:
+                logger.info("Evening duplicate report: nothing new since yesterday, staying quiet")
                 continue
 
             from .duplicate_scanner import get_duplicate_scanner
-            msg = get_duplicate_scanner()._format_telegram_report(exact, similar)
+            msg = get_duplicate_scanner()._format_telegram_report(new_exact, new_similar)
             if msg is None:
                 continue
 
@@ -577,7 +615,25 @@ async def lifespan(app: FastAPI):
         logger.warning("WiFi startup check failed: %s", e)
     start_wifi_monitor()
 
+    # In-process mDNS advertisement — only where nothing else is already doing it. Linux
+    # boards are covered by avahi-daemon (install.sh's configure_mdns()); starting a second
+    # advertiser there would double-broadcast the same service type for no benefit. Windows
+    # has no avahi equivalent at all, so this is the only advertiser it gets.
+    if platform_profile.host_kind() == platform_profile.HostKind.WINDOWS:
+        try:
+            from . import mdns_advertiser
+            await mdns_advertiser.start()
+        except (OSError, RuntimeError, ValueError) as e:
+            logger.warning("mDNS advertisement failed to start: %s", e)
+
     yield
+
+    if platform_profile.host_kind() == platform_profile.HostKind.WINDOWS:
+        try:
+            from . import mdns_advertiser
+            await mdns_advertiser.stop()
+        except (OSError, RuntimeError, ValueError):
+            logger.debug("mDNS advertiser shutdown skipped")
 
     # Cancel scheduled tasks
     for task_attr in ("bot_supervisor_task", "dup_scan_task", "dup_report_task", "memory_diagnostics_task", "local_backup_task", "duration_backfill_task", "http_explainer_task"):
@@ -782,6 +838,7 @@ app.include_router(web_browser_routes.router)
 app.include_router(webapp_routes.router)
 app.include_router(media_routes.router)
 app.include_router(activity_routes.router)
+app.include_router(events_routes.router)
 app.include_router(local_backup_routes.router)
 app.include_router(bluetooth_routes.router)
 
@@ -872,4 +929,12 @@ if __name__ == "__main__":
             kwargs["ssl_keyfile"] = str(key)
         except (OSError, RuntimeError, ValueError):
             logger.warning("Starting without TLS")
+            # Without this, the lifespan's own ensure_tls_cert() call (guarded by
+            # settings.tls_enabled, see below) redundantly repeats the exact same
+            # already-failed 30s-bounded wait -- doubling worst-case startup latency for no
+            # reason, since this attempt already answered the question. On any platform
+            # without a working cert-issuance path (Windows today: no ahc-issue-cert.path
+            # equivalent exists yet), this made every single startup pay 60s instead of 30s.
+            # Found 2026-08-20 running install_windows.ps1 on real Windows hardware.
+            settings.tls_enabled = False
     uvicorn.run(**kwargs)

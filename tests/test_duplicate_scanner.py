@@ -78,6 +78,38 @@ def test_scanner_cross_folder(tmp_path: Path):
     assert len(results[0]["copies"]) == 3
 
 
+@pytest.mark.asyncio
+async def test_scan_respects_exact_whitelist(tmp_path: Path, monkeypatch):
+    """A hash in duplicate_exact_whitelist must be excluded from scan results.
+
+    Otherwise an intentional duplicate (kept via /keep, or shared to family) has no
+    way to be permanently silenced and resurfaces on every nightly rescan.
+    """
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    monkeypatch.setenv("AHC_DATA_DIR", str(data_dir))
+    from app.config import settings
+    from app import store
+    from app.duplicate_scanner import DuplicateScanner, _MIN_SIZE_BYTES
+
+    settings.data_dir = data_dir
+    settings.nas_root = tmp_path / "nas"
+    store._cache.clear()
+
+    content = b"W" * _MIN_SIZE_BYTES
+    _write(settings.personal_path / "alice" / "photo.jpg", content)
+    _write(settings.family_path / "photo.jpg", content)
+
+    scanner = DuplicateScanner()
+    exact, _ = await scanner._scan_nas_for_duplicates()
+    assert len(exact) == 1
+    full_hash = exact[0]["hash"]
+
+    await store.set_value("duplicate_exact_whitelist", [full_hash])
+    exact2, _ = await scanner._scan_nas_for_duplicates()
+    assert exact2 == []
+
+
 # ---------------------------------------------------------------------------
 # Integration tests — HTTP endpoints
 # ---------------------------------------------------------------------------

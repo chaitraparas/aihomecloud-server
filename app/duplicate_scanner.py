@@ -111,8 +111,20 @@ def _collect_files(root: Path) -> list[Path]:
 
 
 def _scan_sync(root: Path) -> list[dict]:
-    """Blocking SHA-256 scan. Returns exact-duplicate sets sorted largest-first."""
-    files = _collect_files(root)
+    """Blocking SHA-256 scan of a single root. Thin wrapper around _scan_sync_files."""
+    return _scan_sync_files(_collect_files(root))
+
+
+def _scan_sync_files(files: list[Path]) -> list[dict]:
+    """Core SHA-256 duplicate scan over a pre-collected list of files.
+
+    Callers with multiple roots (personal/<user>/, family/, entertainment/) must collect
+    files from ALL roots first and pass the combined list here in one call -- hashing each
+    root separately and merging only the ones that already had >=2 copies within a single
+    root misses the common case of exactly one copy per root (e.g. a photo shared once into
+    personal/ and once into family/), since a per-root scan discards singletons before any
+    cross-root merge ever sees them.
+    """
     logger.info("duplicate_scan starting files_found=%d", len(files))
     hash_map: dict[str, list[Path]] = {}
     for path in files:
@@ -444,27 +456,23 @@ class DuplicateScanner:
             loop = asyncio.get_running_loop()
 
             def _exact_all() -> list[dict]:
-                all_exact: list[dict] = []
-                seen_hashes: dict[str, dict] = {}
+                # One combined hash pass across every root -- catches a file with exactly
+                # one copy per root (e.g. shared once into personal/, once into family/),
+                # which per-root-then-merge would miss (see _scan_sync_files docstring).
+                all_files: list[Path] = []
                 for root in user_roots:
-                    for entry in _scan_sync(root):
-                        h = entry["hash"]
-                        if h in seen_hashes:
-                            seen_hashes[h]["copies"].extend(entry["copies"])
-                        else:
-                            seen_hashes[h] = entry
-                            all_exact.append(entry)
-                # Re-filter: keep only sets with ≥2 copies after merge
-                merged = [e for e in all_exact if len(e["copies"]) >= 2]
-                merged.sort(key=lambda r: r["sizeBytes"], reverse=True)
-                return merged
+                    all_files.extend(_collect_files(root))
+                return _scan_sync_files(all_files)
 
-            # Load whitelist in async context before entering executor thread
+            # Load whitelists in async context before entering executor thread
             whitelist_raw = await store.get_value("similar_phash_whitelist", default=[])
             whitelist: set[tuple[str, str]] = {
                 (pair[0], pair[1]) for pair in whitelist_raw
                 if isinstance(pair, list) and len(pair) == 2
             }
+            exact_whitelist: set[str] = set(
+                await store.get_value("duplicate_exact_whitelist", default=[])
+            )
 
             def _similar_all() -> list[dict]:
                 # Collect images from all roots first, then do one union-find pass
@@ -475,6 +483,9 @@ class DuplicateScanner:
                 return _scan_sync_similar_files(all_images, whitelist=whitelist)
 
             exact = await loop.run_in_executor(None, _exact_all)
+            # Drop sets the user already marked "keep all, don't ask again" via
+            # /duplicates -- otherwise they'd resurface on every nightly rescan.
+            exact = [e for e in exact if e.get("hash") not in exact_whitelist]
             similar = await loop.run_in_executor(None, _similar_all)
             await store.set_value("duplicate_scan_results", exact)
             await store.set_value("similar_scan_results", similar)

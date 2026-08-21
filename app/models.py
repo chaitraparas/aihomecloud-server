@@ -133,6 +133,48 @@ class ActivityLogResponse(BaseModel):
     page: int
     page_size: int = Field(alias="pageSize")
 
+
+# ─── Funnel telemetry ────────────────────────────────────────────────────────
+# See kb/telemetry_architecture_decision.md. event_name is intentionally a free string,
+# not an enum -- the app is the source of truth for what stages exist, and pinning that
+# list in the backend's own schema would mean every new stage needs a backend deploy too.
+
+_FUNNEL_EVENT_NAMES = frozenset({
+    "app_installed",
+    "server_connected",
+    "first_backup_completed",
+    "family_member_added",
+    "payment_started",
+})
+
+
+class FunnelEventRequest(BaseModel):
+    """POST /api/v1/events body. No PII fields exist on this model at all, deliberately --
+    there is nothing here to accidentally over-collect."""
+    event_name: str = Field(alias="eventName")
+    client_ts: int | None = Field(default=None, alias="clientTs")
+
+    model_config = {"populate_by_name": True}
+
+    @field_validator("event_name")
+    @classmethod
+    def _validate_known_event(cls, value: str) -> str:
+        if value not in _FUNNEL_EVENT_NAMES:
+            raise ValueError(
+                f"unknown event_name {value!r} -- must be one of {sorted(_FUNNEL_EVENT_NAMES)}"
+            )
+        return value
+
+
+class FunnelCountsResponse(BaseModel):
+    """GET /api/v1/events/funnel — counts only, never raw events. This board's own funnel,
+    nothing aggregated across boards (that's the opt-in path, not built yet — see the
+    architecture decision doc's MVP scope)."""
+    counts: dict[str, int]
+    total_events: int = Field(alias="totalEvents")
+
+    model_config = {"populate_by_name": True}
+
     model_config = {"populate_by_name": True}
 
 

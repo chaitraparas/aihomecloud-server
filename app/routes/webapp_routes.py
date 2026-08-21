@@ -1,22 +1,28 @@
 """
-Serve the Hearth web client as static files.
+Serve the AiHomeCloud web client as static files.
 
-Hearth is a prototype UX built independently against the requirements spec; it ships here so the
-same board that serves the API also serves the page. That is not a convenience — it is what makes
-the client usable at all. Loaded from anywhere else it would face a cross-origin request to a host
-presenting a self-signed certificate the browser never had a chance to accept, which no amount of
-client code fixes. Same-origin, both problems disappear.
+Built independently against the requirements spec, since confirmed genuinely wired to the real
+API (not the mock-data prototype it was once mistaken for — see kb/status.md, 2026-08-20); it
+ships here so the same board that serves the API also serves the page. That is not a convenience
+— it is what makes the client usable at all. Loaded from anywhere else it would face a
+cross-origin request to a host presenting a self-signed certificate the browser never had a
+chance to accept, which no amount of client code fixes. Same-origin, both problems disappear.
 
 Unauthenticated by design, exactly like `/web` and `/browse`: the page carries no secrets and every
 API call it makes needs a bearer token, so serving the shell to an anonymous visitor discloses
 nothing. Access control lives on the API, not on the HTML.
 
-Files are staged into `app/static/webapp/` at deploy time (`backend/scripts/stage_webapp.sh`) and
-ship with the backend from there, per the standing rule that every board serves every feature from
-its own local state rather than reaching for another board. Source of truth for the page itself is
-`clients/web/` (a separate, proprietary directory, outside `backend/`) — not this directory.
-`backend/` is AGPL-3.0; Hearth is the branded product surface and stays out of that boundary. Run
-the stage script (or a fresh deploy) after editing anything under `clients/web/`.
+Files land in `app/static/webapp/` by two different platform-specific mechanisms that both target
+this same directory: on Linux, staged at deploy time (`backend/scripts/stage_webapp.sh`), per the
+standing rule that every board serves every feature from its own local state rather than reaching
+for another board; on Windows, bundled directly into the installer's own payload
+(`backend/installer/AiHomeCloud.iss`'s `[Files]` section), which install_windows.ps1's
+Copy-BackendCode then copies wholesale into the real InstallDir along with everything else. Source
+of truth for the page itself is `clients/web/` (a separate, proprietary directory, outside
+`backend/`) — not this directory. `backend/` is AGPL-3.0; the web client is the branded product
+surface and stays out of that boundary (see the repo root LICENSE for the full reasoning). Run the
+stage script (or a fresh deploy, or rebuild the Windows installer) after editing anything under
+`clients/web/`.
 """
 
 from pathlib import Path
@@ -74,14 +80,14 @@ async def webapp_index_redirect():
 async def webapp_index():
     index = _ROOT / "index.html"
     if not index.is_file():
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Hearth is not installed on this board")
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "The web client is not installed on this board")
     return _no_store(index)
 
 
 @router.get("/app/{asset:path}", include_in_schema=False)
 async def webapp_asset(asset: str):
     """
-    Serve one asset, refusing anything that resolves outside the Hearth directory.
+    Serve one asset, refusing anything that resolves outside the web client's directory.
 
     `asset:path` accepts slashes, which is the point (`js/app.js`) and also the risk — a crafted
     `../../` would otherwise read arbitrary files as the service user. Resolving both sides and

@@ -782,3 +782,36 @@ async def append_activity_event(event: dict) -> None:
             events = events[:_ACTIVITY_LOG_MAX_ENTRIES]
         _write_json(settings.activity_log_file, events)
         _set_cached("activity_log", events)
+
+
+# ---------------------------------------------------------------------------
+# Activation-funnel telemetry (funnel_events.json) — see
+# kb/telemetry_architecture_decision.md. Same shape as the activity log above,
+# deliberately: one already-trusted persistence pattern, not a second one.
+# Local-only by design -- nothing here uploads anywhere on its own.
+# ---------------------------------------------------------------------------
+
+_FUNNEL_EVENTS_MAX_ENTRIES = 5000
+
+
+async def get_funnel_events() -> List[dict]:
+    """Return all persisted funnel events, newest first."""
+    cached = _get_cached("funnel_events")
+    if cached is not None:
+        return cached
+
+    async with _store_lock:
+        events = _read_json(settings.funnel_events_file, [])
+        _set_cached("funnel_events", events)
+        return events
+
+
+async def append_funnel_event(event: dict) -> None:
+    """Append one funnel event (newest first), capped at _FUNNEL_EVENTS_MAX_ENTRIES."""
+    async with _store_lock:
+        events = _read_json(settings.funnel_events_file, [])
+        events.insert(0, event)
+        if len(events) > _FUNNEL_EVENTS_MAX_ENTRIES:
+            events = events[:_FUNNEL_EVENTS_MAX_ENTRIES]
+        _write_json(settings.funnel_events_file, events)
+        _set_cached("funnel_events", events)
