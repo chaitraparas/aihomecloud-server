@@ -504,14 +504,22 @@ async def _handle_empty_trash_callback(update, context) -> None:  # type: ignore
     query = update.callback_query
     await query.answer()
     from .. import store as _st
-    items  = await _st.get_trash_items()
     errors = 0
-    for item in items:
-        try:
-            _unlink_trash_item(item)
-        except Exception:
-            errors += 1
-    await _st.save_trash_items([])
+
+    def _empty(items: list[dict]) -> list[dict]:
+        nonlocal errors
+        # Under mutate_trash_items's single lock acquisition -- a get_trash_items() +
+        # save_trash_items([]) pair here would unconditionally wipe metadata for anything a
+        # concurrent soft-delete added between the read and this write, orphaning its physical
+        # file (still on disk, no longer tracked).
+        for item in items:
+            try:
+                _unlink_trash_item(item)
+            except Exception:
+                errors += 1
+        return []
+
+    await _st.mutate_trash_items(_empty)
     if errors:
         await query.edit_message_text(
             f"⚠️ Trash emptied with {errors} error(s).", parse_mode="HTML"

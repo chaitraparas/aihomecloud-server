@@ -73,51 +73,57 @@ async def _purge_trash_if_needed() -> None:
     auto_delete = await store.get_value("trash_auto_delete", default=False)
 
     now = datetime.now(timezone.utc)
-    items = await store.get_trash_items()
-    starting_count = len(items)
-    to_keep: list[dict] = []
 
-    # First pass: drop items older than TRASH_MAX_DAYS only when auto-delete is on
-    for item in items:
-        if auto_delete:
-            try:
-                deleted_at = datetime.fromisoformat(item["deletedAt"])
-                if deleted_at.tzinfo is None:
-                    deleted_at = deleted_at.replace(tzinfo=timezone.utc)
-                age_days = (now - deleted_at).days
-            except Exception:
-                age_days = 0
-            if age_days >= _TRASH_MAX_DAYS:
-                _unlink_trash_item(item, reason=f"age>={_TRASH_MAX_DAYS}d (age_days={age_days})")
-                continue
-        to_keep.append(item)
+    def _decide(items: list[dict]) -> list[dict]:
+        # Runs under store.mutate_trash_items's single lock acquisition -- a get_trash_items()
+        # + save_trash_items() pair here would let a concurrent restore/delete (each of which
+        # now also goes through the same lock) read the same stale snapshot this purge computed
+        # against, and whichever save ran last would silently discard the other's change.
+        starting_count = len(items)
+        to_keep: list[dict] = []
 
-    # Second pass: purge oldest until total trash size is under quota (always active)
-    total_size = sum(i.get("sizeBytes", 0) for i in to_keep)
-    if total_size > quota_bytes:
-        logger.warning(
-            "trash_quota_exceeded total_bytes=%d quota_bytes=%d items=%d — purging oldest until under quota",
-            total_size, int(quota_bytes), len(to_keep),
-        )
-        to_keep.sort(key=lambda i: i.get("deletedAt", ""))
-        final: list[dict] = []
-        for item in to_keep:
-            item_size = max(item.get("sizeBytes", 0), 0)
-            if total_size <= quota_bytes or item_size == 0:
-                # Keep zero-byte items — they don't contribute to quota
-                final.append(item)
-            else:
-                _unlink_trash_item(item, reason=f"quota (total_bytes={total_size} quota_bytes={int(quota_bytes)})")
-                total_size -= item_size
-        to_keep = final
+        # First pass: drop items older than TRASH_MAX_DAYS only when auto-delete is on
+        for item in items:
+            if auto_delete:
+                try:
+                    deleted_at = datetime.fromisoformat(item["deletedAt"])
+                    if deleted_at.tzinfo is None:
+                        deleted_at = deleted_at.replace(tzinfo=timezone.utc)
+                    age_days = (now - deleted_at).days
+                except Exception:
+                    age_days = 0
+                if age_days >= _TRASH_MAX_DAYS:
+                    _unlink_trash_item(item, reason=f"age>={_TRASH_MAX_DAYS}d (age_days={age_days})")
+                    continue
+            to_keep.append(item)
 
-    if len(to_keep) != starting_count:
-        logger.warning(
-            "trash_purge_complete purged=%d remaining=%d",
-            starting_count - len(to_keep), len(to_keep),
-        )
+        # Second pass: purge oldest until total trash size is under quota (always active)
+        total_size = sum(i.get("sizeBytes", 0) for i in to_keep)
+        if total_size > quota_bytes:
+            logger.warning(
+                "trash_quota_exceeded total_bytes=%d quota_bytes=%d items=%d — purging oldest until under quota",
+                total_size, int(quota_bytes), len(to_keep),
+            )
+            to_keep.sort(key=lambda i: i.get("deletedAt", ""))
+            final: list[dict] = []
+            for item in to_keep:
+                item_size = max(item.get("sizeBytes", 0), 0)
+                if total_size <= quota_bytes or item_size == 0:
+                    # Keep zero-byte items — they don't contribute to quota
+                    final.append(item)
+                else:
+                    _unlink_trash_item(item, reason=f"quota (total_bytes={total_size} quota_bytes={int(quota_bytes)})")
+                    total_size -= item_size
+            to_keep = final
 
-    await store.save_trash_items(to_keep)
+        if len(to_keep) != starting_count:
+            logger.warning(
+                "trash_purge_complete purged=%d remaining=%d",
+                starting_count - len(to_keep), len(to_keep),
+            )
+        return to_keep
+
+    await store.mutate_trash_items(_decide)
 
 
 def _unlink_trash_item(item: dict, reason: str = "unspecified") -> None:
@@ -167,8 +173,7 @@ async def restore_trash_item(item_id: str, user: dict = Depends(get_current_user
     trash_path = _validate_trash_path(match["trashPath"])
     if not trash_path.exists():
         # Physical file gone — remove metadata and 404
-        remaining = [i for i in all_items if i.get("id") != item_id]
-        await store.save_trash_items(remaining)
+        await store.remove_trash_item(item_id)
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Trash file no longer exists")
 
     original_path = _safe_resolve(match["originalPath"])
@@ -191,8 +196,7 @@ async def restore_trash_item(item_id: str, user: dict = Depends(get_current_user
     elif dest.is_dir() and _is_documents_scoped(dest):
         await index_documents_under_path(str(dest), user_id)
 
-    remaining = [i for i in all_items if i.get("id") != item_id]
-    await store.save_trash_items(remaining)
+    await store.remove_trash_item(item_id)
 
 
 @router.delete("/trash/{item_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -211,8 +215,7 @@ async def permanent_delete_trash_item(item_id: str, user: dict = Depends(get_cur
     _validate_trash_path(match["trashPath"])
     _unlink_trash_item(match)
 
-    remaining = [i for i in all_items if i.get("id") != item_id]
-    await store.save_trash_items(remaining)
+    await store.remove_trash_item(item_id)
 
 
 @router.get("/trash/prefs", response_model=TrashPrefsResponse)

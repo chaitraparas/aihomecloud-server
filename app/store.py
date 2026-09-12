@@ -750,6 +750,26 @@ async def remove_trash_item(item_id: str) -> None:
         _set_cached("trash", items)
 
 
+async def mutate_trash_items(fn) -> List[dict]:
+    """Read-modify-write the whole trash list under a single lock acquisition.
+
+    For bulk operations (purge, empty-trash) that must decide what to keep from the full
+    list rather than touch one id -- a get_trash_items() + save_trash_items() pair around
+    that decision has the same lost-update race add/remove_trash_item were built to close for
+    single items: a concurrent restore or delete elsewhere reads the same stale snapshot, and
+    whichever save runs last silently discards the other's change.
+
+    ``fn`` receives the current list and must return the new list (called synchronously,
+    under the lock -- it must not await).
+    """
+    async with _store_lock:
+        items = _read_json(settings.trash_file, [])
+        updated = fn(items)
+        _write_json(settings.trash_file, updated)
+        _set_cached("trash", updated)
+        return updated
+
+
 # ---------------------------------------------------------------------------
 # Activity log (activity_log.json) — persisted, queryable audit trail. Written
 # via app/audit.py's audit_log(), a fire-and-forget background task per event

@@ -3,6 +3,7 @@ Store module tests — JSON persistence, atomic writes, caching,
 token purge, OTP lifecycle, and corrupt file recovery.
 """
 
+import asyncio
 import json
 import pytest
 from pathlib import Path
@@ -489,5 +490,84 @@ async def test_activity_log_persists_across_cache_clear(tmp_path, monkeypatch):
     events = await store.get_activity_events()
     assert len(events) == 1
     assert events[0]["actor_id"] == "user1"
+
+    store._cache.clear()
+
+
+# ---------------------------------------------------------------------------
+# Trash metadata — concurrent read-modify-write races
+# ---------------------------------------------------------------------------
+# add_trash_item/remove_trash_item/mutate_trash_items each do their read-modify-write under
+# ONE lock acquisition. Callers that instead did a get_trash_items() + save_trash_items() pair
+# (trash restore/delete, the quota/age purge job, the Telegram empty-trash and dup-review-trash
+# flows) had a real window for a concurrent caller's change to be silently discarded, because
+# each call released the lock between the read and the write.
+
+@pytest.mark.asyncio
+async def test_old_get_then_save_pair_can_lose_a_concurrent_update(tmp_path, monkeypatch):
+    """Reproduces the vulnerable pattern directly (not from application code, since it's been
+    fixed everywhere) -- two callers each do get_trash_items() -> mutate in Python ->
+    save_trash_items(), with a real await-yield forced between the read and the write, exactly
+    where the two separate lock acquisitions used to leave a window open."""
+    monkeypatch.setenv("AHC_DATA_DIR", str(tmp_path))
+    from app.config import settings
+    from app import store
+    settings.data_dir = tmp_path
+    store._cache.clear()
+
+    async def racy_add(new_id):
+        items = await store.get_trash_items()
+        await asyncio.sleep(0)  # yield -- lets the other racy_add's read run in between
+        items = items + [{"id": new_id}]
+        await store.save_trash_items(items)
+
+    await asyncio.gather(racy_add("A"), racy_add("B"))
+
+    stored = await store.get_trash_items()
+    ids = {i["id"] for i in stored}
+    assert ids != {"A", "B"}, "expected the vulnerable racy pattern to lose one of the two writes"
+
+    store._cache.clear()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_add_trash_item_never_loses_an_entry(tmp_path, monkeypatch):
+    monkeypatch.setenv("AHC_DATA_DIR", str(tmp_path))
+    from app.config import settings
+    from app import store
+    settings.data_dir = tmp_path
+    store._cache.clear()
+
+    items = [{"id": f"item-{i}"} for i in range(20)]
+    await asyncio.gather(*(store.add_trash_item(it) for it in items))
+
+    stored = await store.get_trash_items()
+    assert {i["id"] for i in stored} == {f"item-{i}" for i in range(20)}
+
+    store._cache.clear()
+
+
+@pytest.mark.asyncio
+async def test_mutate_trash_items_and_a_concurrent_add_do_not_clobber_each_other(tmp_path, monkeypatch):
+    """A bulk mutate (purge/empty-trash) racing a single add (soft-delete/dup-review-trash)
+    must not lose either change, regardless of which happens to run first."""
+    monkeypatch.setenv("AHC_DATA_DIR", str(tmp_path))
+    from app.config import settings
+    from app import store
+    settings.data_dir = tmp_path
+    store._cache.clear()
+
+    await store.add_trash_item({"id": "seed"})
+
+    await asyncio.gather(
+        store.mutate_trash_items(lambda items: [i for i in items if i["id"] != "seed"]),
+        store.add_trash_item({"id": "new"}),
+    )
+
+    stored = await store.get_trash_items()
+    assert {i["id"] for i in stored} == {"new"}, (
+        "the concurrent add must survive the mutate, and the mutate's removal must not be "
+        "reverted by a stale snapshot from the add"
+    )
 
     store._cache.clear()

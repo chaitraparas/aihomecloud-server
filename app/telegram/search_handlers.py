@@ -75,16 +75,16 @@ async def _move_to_dup_trash(path: Path, owner: str) -> None:
         "deletedBy": owner,
     }
 
-    # Record metadata before moving — roll back if move fails
-    items = await _store.get_trash_items()
-    items.append(item)
-    await _store.save_trash_items(items)
+    # Record metadata before moving — roll back if move fails. add/remove_trash_item do the
+    # read-modify-write under one lock acquisition (unlike a get_trash_items()+save_trash_items()
+    # pair, which would let a concurrent dup-review trash on another file lose this entry, or
+    # this rollback lose that other file's entry).
+    await _store.add_trash_item(item)
 
     try:
         shutil.move(str(path), str(trash_path))
     except Exception:
-        items = [i for i in items if i["id"] != item["id"]]
-        await _store.save_trash_items(items)
+        await _store.remove_trash_item(item["id"])
         raise
 
     logger.info("dup_trash owner=%s file=%s trash=%s", owner, path.name, trash_path)
