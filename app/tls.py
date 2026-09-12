@@ -1,4 +1,4 @@
-﻿"""
+"""
 TLS certificate management for AiHomeCloud.
 
 Certificate generation moved to root (H-11, docs/security/audit-2026-08/H-11_SPKI_ROTATION_DESIGN.md).
