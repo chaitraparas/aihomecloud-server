@@ -113,19 +113,18 @@ if [[ -d "$NEW_RELEASE_DIR" ]]; then
     rm -rf "$NEW_RELEASE_DIR"
 fi
 
-# ── Reject unsafe entries before extracting (tar-slip) ───────────────────────
-# The caller is require_admin-gated, but this still runs as root against uploaded content --
-# a crafted "../../etc/whatever" or absolute-path entry in the tar must not be able to write
-# outside NEW_RELEASE_DIR just because the uploader already had admin API access.
-while IFS= read -r entry; do
-    if [[ "$entry" == /* || "$entry" == *".."* ]]; then
-        die "unsafe path in update bundle: $entry"
-    fi
-done < <(tar -tf "$TAR_PATH")
-
 # ── Extract to a versioned dir, never touching the live tree ────────────────
+# Safety lives in scripts/extract_update_bundle.py, not a bash name check here: a bash guard
+# on `tar -tf` entry NAMES alone never inspects a symlink/hardlink entry's TARGET, which is
+# how a clean-looking entry name can still plant a node resolving outside this directory
+# (empirically verified against GNU tar 1.35, the version on these boards -- see that
+# script's own header for the full analysis). Python's tarfile.data_filter (stdlib, PEP 706)
+# validates both the entry path and any link target before anything is written, independent
+# of which tar binary a future board ships.
 mkdir -p "$NEW_RELEASE_DIR"
-tar -xf "$TAR_PATH" -C "$NEW_RELEASE_DIR"
+if ! python3 "$(dirname "$0")/extract_update_bundle.py" "$TAR_PATH" "$NEW_RELEASE_DIR"; then
+    die "unsafe or invalid update bundle — rejected during extraction"
+fi
 # The uploaded bundle is the same shape bundleBackendForInstaller produces —
 # a top-level "backend/" dir plus install.sh. Only the backend/ contents are
 # what actually gets run; flatten so NEW_RELEASE_DIR itself is app/, requirements.txt, etc.
