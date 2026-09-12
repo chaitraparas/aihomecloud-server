@@ -758,3 +758,55 @@ class TestRecoverStorageMountDetection:
         body = response.json()
         assert body["status"] == "already_mounted"
         assert body["device"] == "/dev/sda1"
+
+
+# ── Concurrent storage conflicts (device_locks.DeviceBusyError) ─────────────
+# `status` was never imported in this module -- both of these paths raised NameError instead
+# of a clean 409 whenever a second request raced an in-progress mount/format on the same
+# device, exactly the concurrent-conflict case device_locks.acquire() exists to report.
+
+@pytest.mark.asyncio
+async def test_format_returns_409_not_500_when_device_is_busy(authenticated_client: AsyncClient):
+    from app.device_locks import DeviceBusyError
+
+    with patch(
+        "app.routes.storage_routes.find_partition",
+        new=AsyncMock(return_value={"name": "sda1", "mountpoint": None, "fstype": "ext4"}),
+    ), patch(
+        "app.routes.storage_routes.device_locks.acquire",
+        new=AsyncMock(side_effect=DeviceBusyError("/dev/sda1", "format:someone-else")),
+    ):
+        response = await authenticated_client.post(
+            "/api/v1/storage/format",
+            json={
+                "device": "/dev/sda1",
+                "label": "CubieNAS",
+                "confirmDevice": "/dev/sda1",
+            },
+        )
+
+    assert response.status_code == 409, f"Expected a clean 409, got {response.status_code}: {response.text}"
+    assert "already running" in response.json().get("detail", "").lower()
+
+
+@pytest.mark.asyncio
+async def test_smart_activate_format_returns_409_not_500_when_device_is_busy(authenticated_client: AsyncClient):
+    from app.device_locks import DeviceBusyError
+
+    with patch(
+        "app.store.get_storage_state",
+        new=AsyncMock(return_value={"activeDevice": None, "displayName": None}),
+    ), patch(
+        "app.routes.storage_routes.list_block_devices",
+        new=AsyncMock(return_value=[{"name": "sda", "size": 1000, "model": "Test", "partitions": []}]),
+    ), patch(
+        "app.routes.storage_routes.device_locks.acquire",
+        new=AsyncMock(side_effect=DeviceBusyError("/dev/sda", "smart-activate:someone-else")),
+    ):
+        response = await authenticated_client.post(
+            "/api/v1/storage/smart-activate",
+            json={"device": "/dev/sda", "format": True},
+        )
+
+    assert response.status_code == 409, f"Expected a clean 409, got {response.status_code}: {response.text}"
+    assert "already running" in response.json().get("detail", "").lower()
