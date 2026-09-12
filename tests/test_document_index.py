@@ -457,3 +457,176 @@ async def test_search_dl_alias_finds_license(tmp_path):
     results = await search_documents("dl", user_role="admin", username="")
     assert len(results) >= 1
     assert any(r["filename"] == "driving.txt" for r in results)
+
+
+# ---------------------------------------------------------------------------
+# list_recent_documents — LIKE-escaping (same class as _search_sync's own_prefix)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_list_recent_username_with_underscore_wildcard_does_not_leak_other_users_docs(tmp_path):
+    """A member named "a_b" listing recents must not match "/personal/axb/..." — SQL LIKE
+    treats a bare "_" as a single-character wildcard. Mirrors
+    test_member_username_with_like_wildcard_does_not_leak_other_users_docs for _search_sync."""
+    await _make_index(tmp_path)
+    nas = tmp_path / "nas"
+    axb_dir = nas / "personal" / "axb" / "Documents"
+    axb_dir.mkdir(parents=True)
+    settings.nas_root = nas
+
+    doc = axb_dir / "secret.txt"
+    doc.write_text("axb private data")
+
+    from app.document_index import index_document, list_recent_documents
+    await index_document(str(doc), doc.name, "axb")
+
+    results = await list_recent_documents(limit=10, user_role="member", username="a_b")
+    assert results == [], "unescaped LIKE wildcard in username must not match a different user's docs"
+
+
+@pytest.mark.asyncio
+async def test_list_recent_username_with_percent_wildcard_does_not_leak_other_users_docs(tmp_path):
+    """A member named "a%" listing recents must not match "/personal/anything/..." — "%" is the
+    zero-or-more-characters LIKE wildcard."""
+    await _make_index(tmp_path)
+    nas = tmp_path / "nas"
+    other_dir = nas / "personal" / "anything" / "Documents"
+    other_dir.mkdir(parents=True)
+    settings.nas_root = nas
+
+    doc = other_dir / "secret.txt"
+    doc.write_text("someone else's private data")
+
+    from app.document_index import index_document, list_recent_documents
+    await index_document(str(doc), doc.name, "anything")
+
+    results = await list_recent_documents(limit=10, user_role="member", username="a%")
+    assert results == [], "unescaped '%' wildcard in username must not match a different user's docs"
+
+
+@pytest.mark.asyncio
+async def test_list_recent_username_with_literal_backslash_is_treated_literally(tmp_path):
+    """A username containing a literal backslash must not be interpreted as an escape
+    character itself — it should only ever match a folder named with that exact backslash."""
+    await _make_index(tmp_path)
+    nas = tmp_path / "nas"
+    real_dir = nas / "personal" / "a" / "Documents"
+    real_dir.mkdir(parents=True)
+    settings.nas_root = nas
+
+    doc = real_dir / "secret.txt"
+    doc.write_text("a's private data")
+
+    from app.document_index import index_document, list_recent_documents
+    await index_document(str(doc), doc.name, "a")
+
+    # username "a\_" must not degrade into matching plain "a" via a mishandled backslash.
+    results = await list_recent_documents(limit=10, user_role="member", username="a\\_")
+    assert results == [], "a literal backslash in the username must not enable an escape bypass"
+
+
+@pytest.mark.asyncio
+async def test_list_recent_still_returns_own_docs_for_a_normal_username(tmp_path):
+    """Positive control: escaping must not break the ordinary case of a member seeing their
+    own recently indexed documents."""
+    await _make_index(tmp_path)
+    nas = tmp_path / "nas"
+    alice_dir = nas / "personal" / "alice" / "Documents"
+    alice_dir.mkdir(parents=True)
+    settings.nas_root = nas
+
+    doc = alice_dir / "invoice.txt"
+    doc.write_text("alice's own document")
+
+    from app.document_index import index_document, list_recent_documents
+    await index_document(str(doc), doc.name, "alice")
+
+    results = await list_recent_documents(limit=10, user_role="member", username="alice")
+    assert len(results) == 1
+    assert results[0]["filename"] == "invoice.txt"
+
+
+# ---------------------------------------------------------------------------
+# remove_documents_by_prefix — LIKE-escaping
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_remove_prefix_with_underscore_in_folder_name_does_not_delete_sibling_folder(tmp_path):
+    """Deleting/renaming a folder literally named "a_b" must not also purge the index for an
+    unrelated sibling folder "axb" — "_" is a single-character LIKE wildcard."""
+    await _make_index(tmp_path)
+    nas = tmp_path / "nas"
+    ab_dir = nas / "personal" / "a_b" / "Documents"
+    axb_dir = nas / "personal" / "axb" / "Documents"
+    ab_dir.mkdir(parents=True)
+    axb_dir.mkdir(parents=True)
+    settings.nas_root = nas
+
+    ab_doc = ab_dir / "file.txt"
+    ab_doc.write_text("a_b's file")
+    axb_doc = axb_dir / "file.txt"
+    axb_doc.write_text("axb's file")
+
+    from app.document_index import index_document, remove_documents_by_prefix, list_recent_documents
+    await index_document(str(ab_doc), ab_doc.name, "a_b")
+    await index_document(str(axb_doc), axb_doc.name, "axb")
+
+    removed = await remove_documents_by_prefix(str(nas / "personal" / "a_b"))
+
+    assert removed == 1, "must remove exactly the intended folder's one doc, not axb's too"
+    remaining = await list_recent_documents(limit=10, user_role="admin", username="")
+    assert any(r["filename"] == "file.txt" and "axb" in r["path"] for r in remaining), (
+        "unescaped '_' wildcard must not have deleted the unrelated sibling folder's index entry"
+    )
+
+
+@pytest.mark.asyncio
+async def test_remove_prefix_with_percent_in_folder_name_does_not_delete_unrelated_folder(tmp_path):
+    """A folder literally named "a%b" must not, via the unescaped "%" wildcard, purge the
+    index for an unrelated folder like "aXYZb"."""
+    await _make_index(tmp_path)
+    nas = tmp_path / "nas"
+    percent_dir = nas / "personal" / "a%b" / "Documents"
+    unrelated_dir = nas / "personal" / "aXYZb" / "Documents"
+    percent_dir.mkdir(parents=True)
+    unrelated_dir.mkdir(parents=True)
+    settings.nas_root = nas
+
+    percent_doc = percent_dir / "file.txt"
+    percent_doc.write_text("a%b's file")
+    unrelated_doc = unrelated_dir / "file.txt"
+    unrelated_doc.write_text("aXYZb's file")
+
+    from app.document_index import index_document, remove_documents_by_prefix, list_recent_documents
+    await index_document(str(percent_doc), percent_doc.name, "a%b")
+    await index_document(str(unrelated_doc), unrelated_doc.name, "aXYZb")
+
+    removed = await remove_documents_by_prefix(str(nas / "personal" / "a%b"))
+
+    assert removed == 1, "must remove exactly the intended folder's one doc, not aXYZb's too"
+    remaining = await list_recent_documents(limit=10, user_role="admin", username="")
+    assert any(r["filename"] == "file.txt" and "aXYZb" in r["path"] for r in remaining), (
+        "unescaped '%' wildcard must not have deleted the unrelated folder's index entry"
+    )
+
+
+@pytest.mark.asyncio
+async def test_remove_prefix_still_deletes_the_real_matching_docs(tmp_path):
+    """Positive control: escaping must not break ordinary prefix deletion."""
+    await _make_index(tmp_path)
+    nas = tmp_path / "nas"
+    doc_dir = nas / "personal" / "bob" / "Documents"
+    doc_dir.mkdir(parents=True)
+    settings.nas_root = nas
+
+    doc = doc_dir / "file.txt"
+    doc.write_text("bob's file")
+
+    from app.document_index import index_document, remove_documents_by_prefix, list_recent_documents
+    await index_document(str(doc), doc.name, "bob")
+
+    removed = await remove_documents_by_prefix(str(nas / "personal" / "bob"))
+
+    assert removed == 1
+    remaining = await list_recent_documents(limit=10, user_role="admin", username="")
+    assert remaining == []

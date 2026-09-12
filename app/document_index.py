@@ -376,10 +376,18 @@ def _remove_sync(nas_path: str) -> None:
 
 
 def _remove_prefix_sync(nas_prefix: str) -> int:
-    """Delete all indexed docs whose path starts with *nas_prefix*."""
+    """Delete all indexed docs whose path starts with *nas_prefix*.
+
+    nas_prefix comes from a real filesystem path being renamed/deleted (file_routes.py) —
+    a folder name a member is otherwise entitled to act on, but not guaranteed free of LIKE
+    wildcards. Unescaped, "%" or "_" in that name broadens the match (e.g. a folder literally
+    named "a_b" would also delete index entries under a sibling "axb"), same class of bug as
+    _search_sync's already-escaped own_prefix.
+    """
     with _get_conn() as conn:
         try:
-            cur = conn.execute("DELETE FROM doc_index WHERE path LIKE ?", (f"{nas_prefix}%",))
+            pattern = f"{_escape_like(nas_prefix)}%"
+            cur = conn.execute("DELETE FROM doc_index WHERE path LIKE ? ESCAPE '\\'", (pattern,))
             conn.commit()
             return cur.rowcount or 0
         except sqlite3.OperationalError:
@@ -572,15 +580,20 @@ def _list_recent_sync(limit: int, user_role: str, username: str) -> list[dict]:
             # This listing had NO filter at all, so it returned the most recent documents belonging
             # to every member — and the Telegram bot then offers "reply with a number" to download
             # them. Anyone linked to the bot could read another member's documents.
+            #
+            # username is a Telegram-chat-linked display name (_get_chat_folder_owner), same
+            # not-guaranteed-alnum caller as _search_sync's own_prefix — escaped for the same
+            # reason: an unescaped "_" or "%" here would broaden the match to another member's
+            # /personal/ folder, reopening the cross-member disclosure this scope was added to close.
             rows = conn.execute(
                 """
                 SELECT path, filename, added_by, added_at
                 FROM doc_index
-                WHERE LOWER(path) LIKE ? OR LOWER(path) LIKE '/shared/%'
+                WHERE LOWER(path) LIKE ? ESCAPE '\\' OR LOWER(path) LIKE '/shared/%'
                 ORDER BY added_at DESC
                 LIMIT ?
                 """,
-                (f"/personal/{(username or '').lower()}/%", limit),
+                (f"/personal/{_escape_like((username or '').lower())}/%", limit),
             ).fetchall()
         return [dict(row) for row in rows]
 
