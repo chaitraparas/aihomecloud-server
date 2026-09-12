@@ -279,6 +279,12 @@ install_packages() {
         # present on every Debian/Ubuntu image so far, listed so the dependency is explicit rather
         # than assumed. (Found 2026-08-09 while verifying the disk-guard work.)
         gdisk e2fsprogs
+        # _THUMB_FFMPEG (file_routes.py) hard-codes /usr/bin/ffmpeg to grab a video's thumbnail
+        # frame, both on-demand and via _pregenerate_video_thumbnail right after upload. Never
+        # listed here, so every video thumbnail silently failed (best-effort, caught and logged,
+        # never surfaced) on a stock install -- the Gallery grid showed a bare play-icon
+        # placeholder for every video, indefinitely, not just until first view.
+        ffmpeg
     )
 
     local to_install=()
