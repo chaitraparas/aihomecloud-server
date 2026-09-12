@@ -499,7 +499,8 @@ async def test_failed_logins_pruned_after_lockout_expires(client: AsyncClient):
     # Inject a stale (already-expired) lockout entry for a fake IP
     fake_ip = "10.0.0.99"
     expired_lockout = _time.time() - 1  # 1 second in the past
-    auth_routes._failed_logins[fake_ip] = (auth_routes._MAX_FAILURES, expired_lockout)
+    last_attempt_at = expired_lockout - auth_routes._LOCKOUT_SECONDS  # the attempt that set it
+    auth_routes._failed_logins[fake_ip] = (auth_routes._MAX_FAILURES, expired_lockout, last_attempt_at)
     assert fake_ip in auth_routes._failed_logins
 
     # Trigger any login attempt -- prune runs at top of the handler
@@ -520,13 +521,72 @@ async def test_prune_failed_logins_keeps_active_entries():
     auth_routes._failed_logins.clear()
     now = _time.time()
 
-    auth_routes._failed_logins["1.2.3.4"] = (10, now - 5)    # expired
-    auth_routes._failed_logins["5.6.7.8"] = (10, now + 500)  # still locked
+    auth_routes._failed_logins["1.2.3.4"] = (10, now - 5, now - 1000)  # inactive past lockout window
+    auth_routes._failed_logins["5.6.7.8"] = (10, now + 500, now)       # still locked, just attempted
 
     auth_routes._prune_failed_logins()
 
     assert "1.2.3.4" not in auth_routes._failed_logins, "Expired entry must be removed"
     assert "5.6.7.8" in auth_routes._failed_logins, "Active lockout must be preserved"
+
+    auth_routes._failed_logins.clear()
+
+
+@pytest.mark.asyncio
+async def test_prune_failed_logins_ages_out_an_account_that_never_reached_lockout():
+    """
+    Item #5 regression: the old prune only removed entries whose lockout_until had fired --
+    an account that never reached _MAX_FAILURES (lockout_until stays 0.0) was never pruned no
+    matter how stale. /auth/login needs no auth and records a failure for ANY submitted account
+    name, including nonexistent ones, so this let an unauthenticated caller grow the dict
+    forever by submitting one failed attempt per distinct fake name. Aging by last_attempt_at
+    regardless of lockout_until closes that.
+    """
+    from app.routes import auth_routes
+    import time as _time
+
+    auth_routes._failed_logins.clear()
+    now = _time.time()
+
+    # Never locked out (count well below _MAX_FAILURES, lockout_until == 0.0), but the attempt
+    # was long enough ago that it should still be considered stale.
+    auth_routes._failed_logins["some-fake-account"] = (1, 0.0, now - auth_routes._LOCKOUT_SECONDS - 1)
+
+    auth_routes._prune_failed_logins()
+
+    assert "some-fake-account" not in auth_routes._failed_logins, (
+        "an inactive never-locked entry must still be pruned, not kept forever"
+    )
+
+    auth_routes._failed_logins.clear()
+
+
+@pytest.mark.asyncio
+async def test_prune_failed_logins_enforces_max_entries_evicting_oldest_first():
+    """
+    Item #5 regression: a hard cap on total entries as a second, independent bound -- even if
+    an attacker's requests arrive faster than the age-based prune would naturally catch up
+    (or the account names are recycled to dodge the age check some other way), the dict cannot
+    grow past _MAX_ENTRIES. Oldest (by last_attempt_at) entries are evicted first.
+    """
+    from app.routes import auth_routes
+    import time as _time
+
+    auth_routes._failed_logins.clear()
+    now = _time.time()
+
+    # One entry over the cap, each with a distinct last_attempt_at so eviction order is exact.
+    # Kept within a tight, recent window (well under _LOCKOUT_SECONDS) so the age-based prune
+    # above doesn't remove any of these on its own -- this test isolates the _MAX_ENTRIES cap.
+    total = auth_routes._MAX_ENTRIES + 1
+    for i in range(total):
+        auth_routes._failed_logins[f"account-{i}"] = (1, 0.0, now - (total - i) * 0.01)
+
+    auth_routes._prune_failed_logins()
+
+    assert len(auth_routes._failed_logins) == auth_routes._MAX_ENTRIES, "dict must be capped at _MAX_ENTRIES"
+    assert "account-0" not in auth_routes._failed_logins, "the single oldest entry must be the one evicted"
+    assert f"account-{total - 1}" in auth_routes._failed_logins, "the newest entry must be kept"
 
     auth_routes._failed_logins.clear()
 
@@ -543,7 +603,7 @@ async def test_account_lockout_after_10_failures(client: AsyncClient, admin_toke
 
     # Seed 9 prior failures for the "admin" account so we only need 1 more HTTP
     # request to trigger the lockout (avoids exhausting the slowapi 10/min quota).
-    _failed_logins["admin"] = (9, 0.0)
+    _failed_logins["admin"] = (9, 0.0, time.time())
 
     # 10th failure — triggers lockout, response is still 401 for this request
     r = await client.post(
@@ -581,7 +641,7 @@ async def test_lockout_on_one_account_does_not_block_another(client: AsyncClient
     assert response.status_code == 201
 
     # Lock out "admin" only.
-    _failed_logins["admin"] = (10, time.time() + 900)
+    _failed_logins["admin"] = (10, time.time() + 900, time.time())
 
     # "admin" is locked out.
     r = await client.post("/api/v1/auth/login", json={"name": "admin", "pin": "0000"})

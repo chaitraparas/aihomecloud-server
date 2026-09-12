@@ -17,35 +17,50 @@ from ..limiter import limiter
 
 logger = logging.getLogger("aihomecloud.auth")
 
-# In-memory account lockout: target account name → (fail_count, lockout_until_timestamp).
-# Keyed on the account being logged into, not the caller's IP — a shared IP (multiple family
-# members behind one router/relay) must not let one member's fat-fingered PIN lock out everyone
-# else, and an attacker rotating source addresses must not be able to brute-force one specific
-# account's PIN just by never repeating an IP. Keying on account name closes both gaps: the
-# counter follows who's being targeted, not where the request came from.
-_failed_logins: Dict[str, Tuple[int, float]] = {}
+# In-memory account lockout: target account name → (fail_count, lockout_until_timestamp,
+# last_attempt_at). Keyed on the account being logged into, not the caller's IP — a shared IP
+# (multiple family members behind one router/relay) must not let one member's fat-fingered PIN
+# lock out everyone else, and an attacker rotating source addresses must not be able to
+# brute-force one specific account's PIN just by never repeating an IP. Keying on account name
+# closes both gaps: the counter follows who's being targeted, not where the request came from.
+#
+# /auth/login itself needs no auth, and _record_failure() runs even for a nonexistent account
+# name (body.name is caller-chosen free text) -- an old prune that only removed entries whose
+# lockout_until had already fired never touched an account that stayed under _MAX_FAILURES, so
+# submitting one failed attempt per distinct (even fake) account name grew this dict forever.
+# Every entry is now aged out by last_attempt_at regardless of whether it ever locked, plus a
+# hard cap as a second, independent bound.
+_failed_logins: Dict[str, Tuple[int, float, float]] = {}
 _MAX_FAILURES = 10
 _LOCKOUT_SECONDS = 900  # 15 minutes
+_MAX_ENTRIES = 5000  # oldest (by last_attempt_at) evicted first if ever reached
 
 
 def _prune_failed_logins() -> None:
-    """Remove entries whose lockout has expired. Called opportunistically to keep the dict bounded."""
+    """Age out entries inactive for _LOCKOUT_SECONDS, then enforce _MAX_ENTRIES. Called
+    opportunistically to keep the dict bounded."""
     now = time.time()
     stale = [
-        account for account, (count, lockout_until) in _failed_logins.items()
-        if lockout_until > 0 and lockout_until < now
+        account for account, (_, _, last_attempt_at) in _failed_logins.items()
+        if now - last_attempt_at > _LOCKOUT_SECONDS
     ]
     for account in stale:
         _failed_logins.pop(account, None)
+
+    if len(_failed_logins) > _MAX_ENTRIES:
+        by_age = sorted(_failed_logins.items(), key=lambda item: item[1][2])
+        for account, _ in by_age[: len(_failed_logins) - _MAX_ENTRIES]:
+            _failed_logins.pop(account, None)
 
 
 def _record_failure(account: str) -> None:
     """Increment failed login counter for a target account; set lockout when threshold reached."""
     record = _failed_logins.get(account)
     count = (record[0] if record else 0) + 1
-    lockout_until = (time.time() + _LOCKOUT_SECONDS) if count >= _MAX_FAILURES else 0.0
-    _failed_logins[account] = (count, lockout_until)
-    # Opportunistic prune: remove other unlocked entries while we have the dict open
+    now = time.time()
+    lockout_until = (now + _LOCKOUT_SECONDS) if count >= _MAX_FAILURES else 0.0
+    _failed_logins[account] = (count, lockout_until, now)
+    # Opportunistic prune: remove other stale entries while we have the dict open
     _prune_failed_logins()
 
 from ..auth import (
@@ -445,7 +460,7 @@ async def login(request: Request, body: LoginRequest):
     # Check account lockout
     record = _failed_logins.get(lockout_key)
     if record:
-        count, lockout_until = record
+        count, lockout_until, _ = record
         if lockout_until > now:
             remaining = int(lockout_until - now)
             minutes = max(remaining // 60, 1)
