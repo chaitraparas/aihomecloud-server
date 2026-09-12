@@ -515,20 +515,23 @@ def _dup_summary_markup(exact: list, similar: list, is_admin: bool):
     if InlineKeyboardMarkup is None:
         return None
     rows = []
-    review_row = []
-    if exact:
-        review_row.append(InlineKeyboardButton(
-            f"🗑 Review Exact ({len(exact)})", callback_data="dupexact:0"
-        ))
-    if similar:
-        review_row.append(InlineKeyboardButton(
-            f"📸 Review Similar ({len(similar)})", callback_data="dupsim:0"
-        ))
-    if review_row:
-        rows.append(review_row)
-    if exact and is_admin:
-        rows.append([InlineKeyboardButton("⚡ Auto-clean Exact", callback_data="dupauto:ask")])
+    # Review Exact/Review Similar lead into household-wide duplicate data (every family
+    # member's personal/<name>/ folder) -- gated behind is_admin like Auto-clean and Scan Now
+    # below, so a non-admin chat never even sees a button whose handler will reject it.
     if is_admin:
+        review_row = []
+        if exact:
+            review_row.append(InlineKeyboardButton(
+                f"🗑 Review Exact ({len(exact)})", callback_data="dupexact:0"
+            ))
+        if similar:
+            review_row.append(InlineKeyboardButton(
+                f"📸 Review Similar ({len(similar)})", callback_data="dupsim:0"
+            ))
+        if review_row:
+            rows.append(review_row)
+        if exact:
+            rows.append([InlineKeyboardButton("⚡ Auto-clean Exact", callback_data="dupauto:ask")])
         rows.append([InlineKeyboardButton("🔄 Scan Now", callback_data="dupscan:now")])
     return InlineKeyboardMarkup(rows) if rows else None
 
@@ -645,6 +648,10 @@ def _exact_set_markup(entry: dict, idx: int, total: int):
 async def _handle_dupexact_callback(update, context) -> None:  # type: ignore[type-arg]
     query = update.callback_query
     await query.answer()
+    chat_id = query.message.chat.id
+    if not await _is_admin_chat(chat_id):
+        await query.edit_message_text("🔒 Admin access required.")
+        return
     parts = query.data.split(":")
     try:
         idx = int(parts[1])
@@ -750,6 +757,10 @@ async def _handle_dupexactkeep_callback(update, context) -> None:  # type: ignor
     """
     query = update.callback_query
     await query.answer()
+    chat_id = query.message.chat.id
+    if not await _is_admin_chat(chat_id):
+        await query.edit_message_text("🔒 Admin access required.")
+        return
     parts = query.data.split(":")
     if len(parts) != 2:
         await query.edit_message_text("❌ Invalid data.")
@@ -936,6 +947,10 @@ def _sim_set_markup(idx: int, total: int):
 async def _handle_dupsim_callback(update, context) -> None:  # type: ignore[type-arg]
     query = update.callback_query
     await query.answer()
+    chat_id = query.message.chat.id
+    if not await _is_admin_chat(chat_id):
+        await query.edit_message_text("🔒 Admin access required.")
+        return
     parts = query.data.split(":")
     try:
         idx = int(parts[1])
@@ -958,6 +973,9 @@ async def _handle_dupsimboth_callback(update, context) -> None:  # type: ignore[
     query = update.callback_query
     await query.answer()
     chat_id = query.message.chat.id
+    if not await _is_admin_chat(chat_id):
+        await query.edit_message_text("🔒 Admin access required.")
+        return
     parts = query.data.split(":")
     try:
         idx = int(parts[1])
@@ -994,6 +1012,10 @@ async def _handle_dupsimkeepboth_callback(update, context) -> None:  # type: ign
     """Mark a similar-image set as 'keep both' — whitelist the phash pair and remove from results."""
     query = update.callback_query
     await query.answer()
+    chat_id = query.message.chat.id
+    if not await _is_admin_chat(chat_id):
+        await query.edit_message_text("🔒 Admin access required.")
+        return
     parts = query.data.split(":")
     try:
         idx = int(parts[1])
