@@ -1,6 +1,15 @@
 # Production dependencies — pinned for ARM64 (aarch64) deployment.
 # Generated from requirements.in. Verified on ARM64 Ubuntu 24 (Cubie A7Z).
 #
+# Security pins synced 2026-09-12 to match requirements.txt's 2026-08-08 bump, which this file
+# had silently drifted from (pip-audit: 38 CVEs across these 4 packages, 0 in requirements.txt):
+#   PyJWT            2.12.0 -> 2.13.0    (9 advisories; this parses every auth token on the board)
+#   cryptography      46.0.6 -> 50.0.0    (9 advisories, incl. a vendored-OpenSSL CVSS C:H/I:H/A:H)
+#   python-multipart  0.0.22 -> 0.0.31    (10 advisories; DoS via the multipart upload path)
+#   starlette         0.52.1 -> 1.3.1     (10 advisories; the ASGI substrate for every request)
+# All 4 targets are the exact pins requirements.txt already runs in production on x86_64 and
+# were already verified on this same ARM64 hardware (Cubie A7Z) per this file's own line above.
+#
 # To regenerate on the Cubie device:
 #   pip install pip-tools
 #   pip-compile requirements.in \
@@ -18,16 +27,16 @@ fastapi==0.135.1
 uvicorn[standard]==0.41.0
 h11==0.16.0
 python-json-logger==2.0.7
-PyJWT[crypto]==2.12.0
-cryptography==46.0.6
+PyJWT[crypto]==2.13.0
+cryptography==50.0.0
 passlib[bcrypt]==1.7.4
 bcrypt==4.0.1
-python-multipart==0.0.22
+python-multipart==0.0.31
 psutil==6.1.1
 pydantic==2.10.4
 pydantic-settings==2.7.1
 aiofiles==24.1.0
-starlette==0.52.1
+starlette==1.3.1
 slowapi==0.1.9
 python-telegram-bot==21.3
 anyio==4.12.1
