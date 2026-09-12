@@ -19,7 +19,8 @@
 
 ---
 
-FastAPI + SQLite-free JSON storage, built to run on a Raspberry Pi-class board (or any spare
+FastAPI backend — plain JSON files for configuration and small state, SQLite for search and
+duplicate-detection indexes — built to run on a Raspberry Pi-class board (or any spare
 Linux/Windows machine) as the always-on server for the AiHomeCloud family NAS. No monthly bill,
 no vendor storage cap, no third party ever touching the files — the board sitting on your shelf
 is the whole infrastructure.
@@ -51,7 +52,6 @@ this is deliberately smaller and more opinionated.
 ## Quick Start
 
 ```bash
-cd backend
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 python -m app.main
@@ -70,7 +70,6 @@ above, which is for local development only.
 ## Tests
 
 ```bash
-cd backend
 python -m pytest tests/ -q
 ```
 
@@ -80,7 +79,6 @@ python -m pytest tests/ -q
 |-----|-------------|
 | [setup-instructions.md](setup-instructions.md) | Full deployment guide (dev + production) |
 | [api-contracts.md](api-contracts.md) | API reference — all endpoints, methods, auth |
-| [architecture.md](architecture.md) | System architecture — routes, models, providers |
 | [changelog.md](changelog.md) | Release history |
 
 ## License & open source

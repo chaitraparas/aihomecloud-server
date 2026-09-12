@@ -27,8 +27,13 @@ ALLOW_FILES=(
     requirements.txt requirements-arm64.txt requirements.in
     pytest.ini run_tests.sh
     install.sh install_windows.ps1 deploy.sh aihomecloud.service
-    api-contracts.md architecture.md changelog.md setup-instructions.md
+    api-contracts.md changelog.md setup-instructions.md
 )
+# architecture.md deliberately excluded: the private repo's kb/architecture.md still
+# documents the project's original Flutter frontend (lib/, Riverpod, kb/-relative paths) --
+# none of which exists in this server-only export -- and was 6+ months stale even for the
+# private repo's own current (Kotlin/Compose) client. Re-add only once that source doc is
+# rewritten to describe this repo's actual, backend-only architecture.
 # Excluded even though they sit under an allowlisted dir: scripts/stage_webapp.sh
 # references clients/web/ (the proprietary web client, outside backend/ entirely) --
 # meaningless and revealing of private repo structure in a server-only public checkout.
