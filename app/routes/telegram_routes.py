@@ -10,6 +10,8 @@ DELETE /api/v1/telegram/linked/{id}          -- unlink a Telegram account
 
 import asyncio
 import getpass
+import hashlib
+import json
 import logging
 import platform
 import re
@@ -339,6 +341,53 @@ def _arch_to_release_target() -> str | None:
     return mapping.get(arch)
 
 
+_GITHUB_API_LATEST_RELEASE = "https://api.github.com/repos/nerdyparas/AiHomeCloud/releases/latest"
+
+
+async def _fetch_expected_sha256(asset_name: str) -> tuple[Optional[str], str]:
+    """Look up the sha256 digest GitHub's own Releases API reports for one release asset.
+
+    This project has no artifact-signing infrastructure (no maintainer key, no key pinned in
+    this repo) -- the prior check was "is this some ELF file", which a substituted binary of
+    the same file type trivially satisfies. Comparing the download against a digest fetched
+    moments earlier from the same github.com API (over the same TLS trust the download itself
+    already relies on) catches a tampered/stale CDN edge, a corrupted transfer, or a redirect
+    serving something else -- it does NOT protect against a fully compromised publishing
+    pipeline, since whoever could replace the binary could equally replace what this endpoint
+    reports for it. Closing that residual would mean introducing a new signing mechanism
+    (a maintainer-held key + a public key pinned in this repo); this deliberately does not
+    invent one -- see the item #2 security report this fix was made for.
+
+    Returns (digest_hex, "") on success, (None, reason) if the digest can't be established --
+    the caller must fail closed (fall back to source, never skip the check).
+    """
+    rc, out, err = await run_command(
+        ["curl", "-fsSL", "--max-time", "15", _GITHUB_API_LATEST_RELEASE],
+        timeout=20,
+    )
+    if rc != 0:
+        return None, f"could not reach GitHub Releases API: {err[:200]}"
+    try:
+        assets = json.loads(out).get("assets", [])
+    except (json.JSONDecodeError, AttributeError) as exc:
+        return None, f"malformed Releases API response: {exc}"
+    for asset in assets:
+        if asset.get("name") == asset_name:
+            digest = asset.get("digest") or ""
+            if digest.startswith("sha256:"):
+                return digest[len("sha256:"):], ""
+            return None, f"no sha256 digest published for {asset_name}"
+    return None, f"{asset_name} not found in latest release"
+
+
+def _sha256_file(path: str) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
 async def _try_download_prebuilt() -> tuple[bool, str]:
     """Attempt to download a pre-built telegram-bot-api binary from GitHub Releases.
 
@@ -351,8 +400,17 @@ async def _try_download_prebuilt() -> tuple[bool, str]:
         logger.info("prebuilt_skip arch=%s", platform.machine())
         return False, msg
 
-    url = f"{_GITHUB_RELEASES_BASE}/telegram-bot-api-{target}"
+    asset_name = f"telegram-bot-api-{target}"
+    url = f"{_GITHUB_RELEASES_BASE}/{asset_name}"
     tmp_path = f"/tmp/telegram-bot-api-download-{target}"  # nosec B108
+
+    # Fail closed: no digest, no download. Checked before spending the time/bandwidth on a
+    # binary this build would just have to reject anyway.
+    expected_digest, digest_err = await _fetch_expected_sha256(asset_name)
+    if not expected_digest:
+        msg = f"Could not verify integrity of {target} binary — compiling from source…"
+        logger.warning("prebuilt_digest_unavailable asset=%s err=%s", asset_name, digest_err[:200])
+        return False, msg
 
     logger.info("prebuilt_download_attempt url=%s", url)
     rc, _, err = await run_command(
@@ -372,6 +430,18 @@ async def _try_download_prebuilt() -> tuple[bool, str]:
             "compiling from source (~20–40 min)…"
         )
         logger.info("prebuilt_download_failed url=%s err=%s", url, err[:200])
+        Path(tmp_path).unlink(missing_ok=True)
+        return False, msg
+
+    # Integrity check: the downloaded bytes must match the digest fetched above. See
+    # _fetch_expected_sha256's docstring for exactly what this does and doesn't defend against.
+    loop = asyncio.get_running_loop()
+    actual_digest = await loop.run_in_executor(None, _sha256_file, tmp_path)
+    if actual_digest != expected_digest:
+        msg = f"Downloaded {target} binary failed integrity check — compiling from source…"
+        logger.warning(
+            "prebuilt_digest_mismatch url=%s expected=%s actual=%s", url, expected_digest, actual_digest
+        )
         Path(tmp_path).unlink(missing_ok=True)
         return False, msg
 
