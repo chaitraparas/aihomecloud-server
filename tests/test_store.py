@@ -571,3 +571,54 @@ async def test_mutate_trash_items_and_a_concurrent_add_do_not_clobber_each_other
     )
 
     store._cache.clear()
+
+
+# ---------------------------------------------------------------------------
+# Generic kv.json — same class of race, backing the backup_routes.py fix
+# ---------------------------------------------------------------------------
+# create_backup_job/delete_backup_job/report_sync_run used to do a get_value("backup_jobs")
+# + set_value() pair on this same kv.json store -- the HTTP-level version of this race is too
+# timing-sensitive to force reliably through a black-box test client, so this reproduces it
+# directly against the primitives those routes were built on, the same way the trash tests do.
+
+@pytest.mark.asyncio
+async def test_old_get_value_then_set_value_pair_can_lose_a_concurrent_update(tmp_path, monkeypatch):
+    monkeypatch.setenv("AHC_DATA_DIR", str(tmp_path))
+    from app.config import settings
+    from app import store
+    settings.data_dir = tmp_path
+    store._cache.clear()
+
+    async def racy_append(new_id):
+        jobs = await store.get_value("backup_jobs", default=[])
+        await asyncio.sleep(0)  # yield -- the window the old backup_routes.py code left open
+        jobs = jobs + [{"id": new_id}]
+        await store.set_value("backup_jobs", jobs)
+
+    await asyncio.gather(racy_append("A"), racy_append("B"))
+
+    jobs = await store.get_value("backup_jobs", default=[])
+    ids = {j["id"] for j in jobs}
+    assert ids != {"A", "B"}, "expected the vulnerable racy pattern to lose one of the two writes"
+
+    store._cache.clear()
+
+
+@pytest.mark.asyncio
+async def test_atomic_update_never_loses_a_concurrent_append(tmp_path, monkeypatch):
+    """The fixed pattern: N concurrent atomic_update-based appends must all persist."""
+    monkeypatch.setenv("AHC_DATA_DIR", str(tmp_path))
+    from app.config import settings
+    from app import store
+    settings.data_dir = tmp_path
+    store._cache.clear()
+
+    async def safe_append(new_id):
+        await store.atomic_update("backup_jobs", lambda jobs: jobs + [{"id": new_id}], default=[])
+
+    await asyncio.gather(*(safe_append(f"job-{i}") for i in range(10)))
+
+    jobs = await store.get_value("backup_jobs", default=[])
+    assert {j["id"] for j in jobs} == {f"job-{i}" for i in range(10)}
+
+    store._cache.clear()

@@ -190,26 +190,35 @@ async def create_backup_job(
     req: CreateJobRequest,
     user: dict = Depends(get_current_user),
 ) -> dict:
-    """Create a new backup job configuration and persist it."""
-    jobs = await store.get_value("backup_jobs", default=[])
-    if len(jobs) >= _MAX_JOBS:
-        raise HTTPException(
-            status.HTTP_422_UNPROCESSABLE_ENTITY,
-            "Maximum number of backup jobs reached",
-        )
+    """Create a new backup job configuration and persist it.
 
-    job: dict = {
-        "id": uuid.uuid4().hex[:12],
-        "ownerId": user.get("sub", ""),
-        "phoneFolder": req.phoneFolder,
-        "destination": req.destination,
-        "lastSyncAt": None,
-        "totalUploaded": 0,
-        "totalSkipped": 0,
-    }
-    jobs.append(job)
-    await store.set_value("backup_jobs", jobs)
-    return job
+    Under store.atomic_update's single lock acquisition -- a get_value()+set_value() pair
+    (the previous shape) would let two devices setting up a backup job at the same moment
+    each read the same jobs list and each append their own job to it; whichever set_value ran
+    last would silently discard the other device's new job.
+    """
+    created: dict = {}
+
+    def _create(jobs: list) -> list:
+        if len(jobs) >= _MAX_JOBS:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                "Maximum number of backup jobs reached",
+            )
+        job: dict = {
+            "id": uuid.uuid4().hex[:12],
+            "ownerId": user.get("sub", ""),
+            "phoneFolder": req.phoneFolder,
+            "destination": req.destination,
+            "lastSyncAt": None,
+            "totalUploaded": 0,
+            "totalSkipped": 0,
+        }
+        created.update(job)
+        return jobs + [job]
+
+    await store.atomic_update("backup_jobs", _create, default=[])
+    return created
 
 
 @router.delete("/jobs/{job_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -217,18 +226,25 @@ async def delete_backup_job(
     job_id: str,
     user: dict = Depends(get_current_user),
 ) -> None:
-    """Remove a backup job configuration by ID. Owner (or admin) only — see _owns_job."""
+    """Remove a backup job configuration by ID. Owner (or admin) only — see _owns_job.
+
+    See create_backup_job's docstring: a get_value()+set_value() pair here would let a
+    concurrent create/report on a different job silently be discarded by this delete's write.
+    """
     from ..auth import is_currently_admin
 
-    jobs = await store.get_value("backup_jobs", default=[])
-    target = next((j for j in jobs if j.get("id") == job_id), None)
-    if target is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Backup job not found")
-    if not _owns_job(target, user.get("sub", ""), await is_currently_admin(user)):
-        raise HTTPException(status.HTTP_403_FORBIDDEN, "Cannot delete another user's backup job")
+    is_admin = await is_currently_admin(user)
+    user_id = user.get("sub", "")
 
-    updated = [j for j in jobs if j.get("id") != job_id]
-    await store.set_value("backup_jobs", updated)
+    def _delete(jobs: list) -> list:
+        target = next((j for j in jobs if j.get("id") == job_id), None)
+        if target is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Backup job not found")
+        if not _owns_job(target, user_id, is_admin):
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "Cannot delete another user's backup job")
+        return [j for j in jobs if j.get("id") != job_id]
+
+    await store.atomic_update("backup_jobs", _delete, default=[])
 
 
 @router.post("/jobs/{job_id}/report")
@@ -237,21 +253,33 @@ async def report_sync_run(
     req: SyncReportRequest,
     user: dict = Depends(get_current_user),
 ) -> dict:
-    """Update a job's stats after a completed sync run. Owner (or admin) only — see _owns_job."""
+    """Update a job's stats after a completed sync run. Owner (or admin) only — see _owns_job.
+
+    Two phones syncing at the same moment (even different jobs) is the exact race this used
+    to hit: each read the same jobs list, each incremented their own target's counters against
+    that shared snapshot, and whichever set_value ran last overwrote the other's counters --
+    not merged. See create_backup_job's docstring for the general pattern.
+    """
     from ..auth import is_currently_admin
 
-    jobs = await store.get_value("backup_jobs", default=[])
-    target = next((j for j in jobs if j.get("id") == job_id), None)
-    if target is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Backup job not found")
-    if not _owns_job(target, user.get("sub", ""), await is_currently_admin(user)):
-        raise HTTPException(status.HTTP_403_FORBIDDEN, "Cannot report sync for another user's backup job")
+    is_admin = await is_currently_admin(user)
+    user_id = user.get("sub", "")
+    reported: dict = {}
 
-    target["totalUploaded"] = target.get("totalUploaded", 0) + req.uploaded
-    target["totalSkipped"] = target.get("totalSkipped", 0) + req.skipped
-    target["lastSyncAt"] = req.lastSyncAt
-    await store.set_value("backup_jobs", jobs)
-    return target
+    def _report(jobs: list) -> list:
+        target = next((j for j in jobs if j.get("id") == job_id), None)
+        if target is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Backup job not found")
+        if not _owns_job(target, user_id, is_admin):
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "Cannot report sync for another user's backup job")
+        target["totalUploaded"] = target.get("totalUploaded", 0) + req.uploaded
+        target["totalSkipped"] = target.get("totalSkipped", 0) + req.skipped
+        target["lastSyncAt"] = req.lastSyncAt
+        reported.update(target)
+        return jobs
+
+    await store.atomic_update("backup_jobs", _report, default=[])
+    return reported
 
 
 # ── Telegram backup notification ─────────────────────────────────────────────

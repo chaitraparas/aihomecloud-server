@@ -257,6 +257,37 @@ async def test_report_nonexistent_job(client: AsyncClient, admin_token: str):
     assert resp.status_code == 404
 
 
+# ── Concurrent job creation must not lose a job ───────────────────────────────
+
+@pytest.mark.asyncio
+async def test_concurrent_job_creation_does_not_lose_a_job(client: AsyncClient, admin_token: str):
+    """
+    Regression: create_backup_job used to do a get_value("backup_jobs")+set_value() pair --
+    two devices setting up a backup job at the same moment could each read the same list and
+    each append their own job to it, with whichever set_value ran last discarding the other's
+    new job. Now wrapped in store.atomic_update, so N concurrent creates must all persist.
+    """
+    import asyncio
+
+    headers = {"Authorization": f"Bearer {admin_token}"}
+
+    async def _create(i: int):
+        return await client.post(
+            "/api/v1/backup/jobs",
+            json={"phoneFolder": f"DCIM/Camera{i}", "destination": "personal"},
+            headers=headers,
+        )
+
+    responses = await asyncio.gather(*(_create(i) for i in range(8)))
+    assert all(r.status_code == 201 for r in responses)
+
+    status_resp = await client.get("/api/v1/backup/status", headers=headers)
+    assert status_resp.status_code == 200
+    jobs = status_resp.json()["jobs"]
+    assert len(jobs) == 8, "all 8 concurrently created jobs must be persisted, none lost"
+    assert len({j["id"] for j in jobs}) == 8, "job ids must be distinct, no duplicate/collided writes"
+
+
 # ── /notify — silent when nothing happened ────────────────────────────────────
 
 @pytest.mark.asyncio
