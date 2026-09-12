@@ -6,20 +6,29 @@ there is no PowerShell or Inno Setup compiler in this environment, and the Windo
 machine is unavailable (see kb/handoff_windows_installer_2026-08-20.md).
 
 These are NOT the production implementation and must NOT be imported by it. They are a
-hand-synced mirror of the same *rules*, kept deliberately tiny (three pure functions, no
-Windows API calls) so a change to the real PowerShell/Pascal logic is easy to eyeball against
-this file and update. If the two ever drift, this file is wrong, not a spec -- re-sync it
-against the real functions rather than "fixing" the PowerShell to match a stale test.
+hand-synced mirror of the same *rules*, kept deliberately tiny (pure functions, no Windows API
+calls) so a change to the real PowerShell/Pascal logic is easy to eyeball against this file and
+update. If the two ever drift, this file is wrong, not a spec -- re-sync it against the real
+functions rather than "fixing" the PowerShell to match a stale test.
 
 What this proves, precisely:
   1. contains_unsafe_char() mirrors ContainsUnsafeChar (AiHomeCloud.iss) -- the characters
      Windows itself reserves in a path (< > " | ? * and control chars) are rejected outright,
      at BOTH call sites that now use it (interactive NextButtonClick, and the caller-independent
      CurStepChanged guard added in the 2026-08-21 verification pass).
-  2. is_dangerous_nas_root() mirrors Test-SafeNasRoot's dangerous-path check
+  2. is_drive_relative() mirrors Test-SafeNasRoot's new upfront gate (2026-09-12 fix) -- a
+     NasRoot that isn't already a fully-qualified, drive-rooted path (e.g. "D:\\AiHomeCloud") is
+     refused outright, before any resolution happens, since a drive-relative form like "C:temp"
+     resolves against that drive's own current directory (a per-process Windows concept no
+     static check can predict).
+  3. is_dangerous_nas_root() mirrors Test-SafeNasRoot's dangerous-path check
      (install_windows.ps1) -- bare drive roots and known Windows system/app directories are
-     refused regardless of caller (GUI, silent /NASROOT=, or direct script invocation).
-  3. ps_single_quote_escape() mirrors PSSingleQuoteEscape (AiHomeCloud.iss) -- and
+     refused regardless of caller (GUI, silent /NASROOT=, or direct script invocation). As of the
+     2026-09-12 fix it normalizes ".." / "." segments FIRST (mirroring
+     [System.IO.Path]::GetFullPath()), so a lexically-innocuous traversal path that resolves to
+     a dangerous directory (e.g. "C:\\Innocuous\\..\\..\\Windows" -> "C:\\Windows") is caught
+     too, not just an already-dangerous literal string.
+  4. ps_single_quote_escape() mirrors PSSingleQuoteEscape (AiHomeCloud.iss) -- and
      _parse_ps_single_quoted_arg() is an independent, from-scratch implementation of
      PowerShell's actual single-quoted-string grammar (open ' ... close ', with '' -> a
      literal ' and nothing else ever escaped). Round-tripping every test value through
@@ -30,7 +39,9 @@ What this proves, precisely:
 
 from __future__ import annotations
 
+import ntpath
 import os
+import re
 
 import pytest
 
@@ -59,9 +70,26 @@ _DANGEROUS_PREFIXES = (
     r"C:\USERS",
 )
 
+# Mirror of the upfront regex Test-SafeNasRoot now checks BEFORE any resolution: NasRoot must
+# already read as a fully-qualified drive-rooted path ("D:\..."). PowerShell's -match is
+# case-insensitive by default, hence re.IGNORECASE here.
+_DRIVE_ROOTED_RE = re.compile(r"^[A-Za-z]:\\")
+
+
+def is_drive_relative(path: str) -> bool:
+    """Mirror of Test-SafeNasRoot's new upfront guard (2026-09-12): a path like "C:temp" (drive
+    letter + colon, no backslash) is drive-relative in Windows -- it resolves against that
+    drive's OWN current directory, not the drive root -- so it must be rejected outright rather
+    than resolved and guessed at."""
+    return not bool(_DRIVE_ROOTED_RE.match(path))
+
 
 def is_dangerous_nas_root(path: str) -> bool:
-    trimmed = path.rstrip("\\")
+    # Mirror of [System.IO.Path]::GetFullPath(): collapse ".."/"." segments BEFORE the
+    # dangerous-prefix comparison, so a traversal path that only *resolves* to a dangerous
+    # directory (rather than lexically starting with one) is still caught.
+    resolved = ntpath.normpath(path)
+    trimmed = resolved.rstrip("\\")
     if len(trimmed) <= 2 or trimmed[1] != ":":
         return True  # bare drive root ("D:", "D:\") or not a real drive-letter path at all
     upper = trimmed.upper()
@@ -162,6 +190,27 @@ DANGEROUS_PATHS = [
     r"C:\Users\SomeUser",
 ]
 
+# The exact class of attack CodeRabbit's audit flagged: a lexically-innocuous path that
+# resolves (via ".." collapsing) to a dangerous directory. Pre-fix, is_dangerous_nas_root did a
+# raw string comparison and let every one of these through.
+TRAVERSAL_ATTACK_PATHS = [
+    r"C:\Innocuous\..\..\Windows",  # the report's own example
+    r"C:\AiHomeCloud\..\..\Windows\System32",
+    r"C:\Program Files\..\Windows",
+    r"C:\Users\SomeUser\..\..\..\Windows",
+    r"C:\Innocuous\..\..\windows\system32",  # traversal + case-insensitivity together
+]
+
+# Drive-relative paths (drive letter + colon, NOT followed by a backslash) -- these resolve
+# against that drive's own current directory in real Windows, not the drive root, so the fix
+# rejects them outright rather than attempting to resolve them.
+DRIVE_RELATIVE_PATHS = [
+    "C:temp",
+    "C:AiHomeCloud",
+    "D:Data",
+    "C:..\\Windows",  # drive-relative AND a traversal attempt -- still caught by the same gate
+]
+
 # One representative payload per character the audit's injection brief called out, each
 # embedded in an otherwise-ordinary-looking NAS path.
 INJECTION_PAYLOADS = {
@@ -217,6 +266,78 @@ class TestIsDangerousNasRoot:
     @pytest.mark.parametrize("path", DANGEROUS_PATHS)
     def test_dangerous_paths_are_flagged(self, path):
         assert is_dangerous_nas_root(path) is True
+
+    @pytest.mark.parametrize("path", TRAVERSAL_ATTACK_PATHS)
+    def test_traversal_paths_resolving_to_a_dangerous_directory_are_flagged(self, path):
+        """The 2026-09-12 fix: pre-fix, this was a raw string comparison against the
+        unresolved NasRoot, so "C:\\Innocuous\\..\\..\\Windows" never lexically starts with
+        "C:\\WINDOWS" and sailed through -- handing the low-privilege service account write
+        access to C:\\Windows. Post-fix, ".."/"." segments are collapsed (mirroring
+        [System.IO.Path]::GetFullPath()) BEFORE the prefix comparison, so the RESOLVED
+        destination is what gets checked."""
+        assert is_dangerous_nas_root(path) is True
+
+    def test_traversal_paths_resolve_to_exactly_the_expected_dangerous_directory(self):
+        """Not just "flagged somehow" -- prove the resolution itself is correct, i.e. this
+        genuinely lands on the same directory the raw dangerous-path check already refuses."""
+        assert ntpath.normpath(r"C:\Innocuous\..\..\Windows") == r"C:\Windows"
+
+    def test_traversal_to_a_safe_directory_is_still_allowed(self):
+        """Negative control: traversal by itself isn't the crime -- resolving into a genuinely
+        safe location must still be permitted, proving the fix checks the RESOLVED destination
+        rather than blanket-rejecting every ".." (which would break legitimate nested-then-back
+        paths like installer-generated defaults)."""
+        assert is_dangerous_nas_root(r"D:\AiHomeCloud\Media\..\Data") is False
+
+
+class TestIsDriveRelative:
+    @pytest.mark.parametrize("path", VALID_PATHS)
+    def test_legitimate_paths_are_not_flagged(self, path):
+        assert is_drive_relative(path) is False
+
+    @pytest.mark.parametrize("path", DRIVE_RELATIVE_PATHS)
+    def test_drive_relative_paths_are_flagged(self, path):
+        """These must be rejected outright by the upfront gate -- their real target depends on
+        that drive's current directory, which cannot be predicted or safely resolved here."""
+        assert is_drive_relative(path) is True
+
+    @pytest.mark.parametrize("path", DANGEROUS_PATHS + TRAVERSAL_ATTACK_PATHS)
+    def test_already_rooted_dangerous_and_traversal_paths_are_not_caught_by_this_gate(self, path):
+        """This gate only rejects the drive-relative FORM. Paths that are already
+        fully-qualified (even dangerous or traversal-laden ones) must pass it through to the
+        next gate (is_dangerous_nas_root) rather than being misclassified here -- each gate has
+        exactly one job."""
+        if path in ("C:", "D:"):
+            pytest.skip("bare 'C:' with no backslash at all is itself drive-relative")
+        assert is_drive_relative(path) is False
+
+
+class TestSafeNasRootCombinedGateOrder:
+    """End-to-end mirror of Test-SafeNasRoot's actual call order: the drive-relative gate runs
+    FIRST on the raw input, then normalization + the dangerous-directory check. Every path in
+    this module's classification lists must land in exactly one bucket -- there is no path that
+    should silently pass both gates undetected other than a genuinely safe one."""
+
+    def _passes_safe_nas_root(self, path: str) -> bool:
+        if is_drive_relative(path):
+            return False
+        return not is_dangerous_nas_root(path)
+
+    @pytest.mark.parametrize("path", VALID_PATHS)
+    def test_valid_paths_pass_the_full_gate(self, path):
+        assert self._passes_safe_nas_root(path) is True
+
+    @pytest.mark.parametrize("path", DANGEROUS_PATHS)
+    def test_dangerous_paths_are_rejected_by_the_full_gate(self, path):
+        assert self._passes_safe_nas_root(path) is False
+
+    @pytest.mark.parametrize("path", TRAVERSAL_ATTACK_PATHS)
+    def test_traversal_paths_are_rejected_by_the_full_gate(self, path):
+        assert self._passes_safe_nas_root(path) is False
+
+    @pytest.mark.parametrize("path", DRIVE_RELATIVE_PATHS)
+    def test_drive_relative_paths_are_rejected_by_the_full_gate(self, path):
+        assert self._passes_safe_nas_root(path) is False
 
 
 class TestReparsePointAncestor:

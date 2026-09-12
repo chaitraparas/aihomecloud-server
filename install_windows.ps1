@@ -164,7 +164,27 @@ function Test-NotDomainJoined {
 # Inno-side checks are now a UX nicety on top of this, not the only line of defense.
 function Test-SafeNasRoot {
     Write-Step "[0b/9] Validating storage location..."
-    $trimmed = $NasRoot.TrimEnd('\')
+    # NasRoot must already be a fully-qualified, drive-rooted path (e.g. "D:\..."), not a
+    # drive-relative reference like "C:temp" -- those resolve against that drive's OWN current
+    # directory (a per-process Windows concept), which this script has no reliable way to
+    # predict, so they're refused outright rather than guessed at. Checked on the RAW input,
+    # before any normalization, so this gate itself can't be bypassed by what follows.
+    if ($NasRoot -notmatch '^[A-Za-z]:\\') {
+        throw "-NasRoot '$NasRoot' must be a fully-qualified path starting with 'DriveLetter:\' (e.g. D:\AiHomeCloud\Data) -- drive-relative paths like 'C:temp' are rejected outright, since their real target depends on that drive's current directory and can't be predicted here."
+    }
+    # Resolve BEFORE the dangerous-directory comparison: NasRoot is raw, unresolved user input,
+    # and Windows normalizes ".." segments when the path is actually used for I/O. A check
+    # against the raw string can pass while the resolved path lands somewhere entirely
+    # different -- e.g. "C:\Innocuous\..\..\Windows" doesn't lexically start with "C:\WINDOWS"
+    # but resolves to exactly that. GetFullPath is a pure string/syntax normalization (no
+    # filesystem access), so it works even before NasRoot exists (New-Directories creates it
+    # later on a fresh install).
+    try {
+        $resolved = [System.IO.Path]::GetFullPath($NasRoot)
+    } catch {
+        throw "-NasRoot '$NasRoot' is not a valid path: $($_.Exception.Message)"
+    }
+    $trimmed = $resolved.TrimEnd('\')
     if ($trimmed.Length -le 2 -or $trimmed[1] -ne ':') {
         throw "-NasRoot '$NasRoot' must be a full path starting with a drive letter, and not a bare drive root (e.g. D:\AiHomeCloud\Data, not D:\ or D:)."
     }
@@ -175,11 +195,12 @@ function Test-SafeNasRoot {
     $upperTrimmed = $trimmed.ToUpperInvariant()
     foreach ($d in $dangerous) {
         if ($upperTrimmed -eq $d -or $upperTrimmed.StartsWith("$d\")) {
-            throw "-NasRoot '$NasRoot' resolves under a Windows system/application directory -- refusing to grant the low-privilege service account recursive write access there. Choose a dedicated folder outside any system directory, e.g. D:\AiHomeCloud\Data."
+            throw "-NasRoot '$NasRoot' resolves to '$trimmed', which is under a Windows system/application directory -- refusing to grant the low-privilege service account recursive write access there. Choose a dedicated folder outside any system directory, e.g. D:\AiHomeCloud\Data."
         }
     }
     # Reparse-point check: a string-only dangerous-path comparison can be bypassed by pointing
-    # an innocuous-looking folder at a protected location via a junction/symlink. A legitimate
+    # an innocuous-looking folder at a protected location via a junction/symlink. Walk the
+    # RESOLVED path's ancestors (not the raw, possibly-traversal-laden string) -- a legitimate
     # media library should never itself (or via an ancestor) be a reparse point -- refuse rather
     # than silently following one to wherever it actually leads.
     for ($p = $trimmed; $p.Length -gt 3; $p = Split-Path $p -Parent) {
