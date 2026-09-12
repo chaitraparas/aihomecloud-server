@@ -9,7 +9,7 @@ inserts/updates media.db rows. Safe to re-run any time — media.db's
 blobs.rel_path UNIQUE constraint makes every insert an idempotent upsert.
 
 Usage:
-    cd backend && python -m scripts.backfill_media_index
+    python -m scripts.backfill_media_index
 """
 
 import asyncio

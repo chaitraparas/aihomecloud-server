@@ -4,7 +4,7 @@ One-shot script: sort files in admin's personal folder and OCR-index documents.
 Uses the backend's file_sorter and document_index modules directly.
 
 Usage:
-    cd backend && python -m scripts.sort_rawdata
+    python -m scripts.sort_rawdata
 """
 
 import asyncio

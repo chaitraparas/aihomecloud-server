@@ -3,7 +3,6 @@ TASK-P6-04 — Hardware Integration Tests
 Run directly on the Cubie A7A hardware (or any ARM64 host with the backend running).
 
 Usage:
-    cd backend
     python -m pytest tests/test_hardware_integration.py -v -s --tb=short
 
 Prerequisites:
