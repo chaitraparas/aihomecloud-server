@@ -61,28 +61,21 @@ def _read_json(path: Path, default: Any = _UNSET) -> Any:
     try:
         return json.loads(path.read_text())
     except (json.JSONDecodeError, ValueError):
-        logger.error("corrupt_json path=%s — attempting recovery", path)
+        logger.error("corrupt_json path=%s — data lost, falling back to default", path)
         fallback = {} if default is _UNSET else default
 
-        # Rename corrupt file for forensic inspection
+        # Rename corrupt file for forensic inspection. There is no separate backup this
+        # function can recover from -- this rename is the only thing that ever writes
+        # <path>.json.corrupt, so a prior version of this function that then immediately
+        # re-parsed that same file as a "recovery attempt" was always re-reading the identical
+        # corrupt bytes (or a stale corrupt copy from an earlier, unrelated corruption) and
+        # could never actually recover anything. Removed rather than left as dead code a
+        # future reader could reasonably believe works.
         corrupt_name = path.with_suffix(".json.corrupt")
         try:
             path.rename(corrupt_name)
         except Exception:
             pass
-
-        # Attempt recovery from the .corrupt backup (may be the previous good copy)
-        recovered = False
-        try:
-            if corrupt_name.exists():
-                data = json.loads(corrupt_name.read_text())
-                logger.info("corrupt_json_recovered path=%s from backup", path)
-                # Restore the recovered data back to the original path
-                _atomic_write(path, data)
-                recovered = True
-                fallback = data
-        except (json.JSONDecodeError, ValueError, OSError):
-            logger.error("corrupt_json_recovery_failed path=%s — data lost", path)
 
         # Emit data_corruption event for UI notification
         try:
@@ -92,7 +85,7 @@ def _read_json(path: Path, default: Any = _UNSET) -> Any:
             if loop.is_running():
                 loop.create_task(file_event_bus.publish(FileEvent(
                     path=str(path),
-                    action="data_corruption" if not recovered else "data_corruption_recovered",
+                    action="data_corruption",
                     user="system",
                 )))
         except Exception:
