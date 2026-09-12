@@ -982,3 +982,51 @@ async def test_category_stats_multiple_paths_in_one_call(authenticated_client: A
     assert categories[0]["totalBytes"] == 10
     assert categories[1]["path"] == "/shared/stats_b"
     assert categories[1]["totalBytes"] == 20
+
+
+# ── Thumbnail cache: temp-file naming race between concurrent writers ────────
+# _pregenerate_video_thumbnail (fired right after upload) and the on-demand /thumbnail
+# endpoint can both compute the identical cache_path for the same file+size and race to
+# write it -- the old code built the tmp name as `cache_path.with_suffix(".tmp")`: a fixed
+# name shared by both writers.
+
+def test_old_shared_tmp_name_pattern_raises_on_a_second_concurrent_writer(tmp_path):
+    """Reproduces the vulnerable pattern directly (not from application code, since it's
+    fixed): once one writer's tmp.replace(cache_path) runs, it consumes (renames away) that
+    tmp file -- a second writer's replace() on the same shared name then raises
+    FileNotFoundError instead of silently overwriting, but either way, one writer's thumbnail
+    is lost or the request 500s."""
+    cache_path = tmp_path / "abc123.jpg"
+
+    tmp = cache_path.with_suffix(".tmp")
+    tmp.write_bytes(b"writer-A-thumbnail-bytes")
+    tmp.replace(cache_path)  # writer A finishes first
+
+    # Writer B wrote to the same shared tmp name and now tries to finish its own replace.
+    with pytest.raises(FileNotFoundError):
+        tmp.replace(cache_path)
+
+
+def test_write_thumb_cache_atomically_survives_concurrent_writers_to_the_same_path(tmp_path):
+    """The fix: a unique tmp name per writer (tempfile.mkstemp) means two real, concurrent
+    OS-thread writers targeting the same cache_path never collide on the tmp file itself --
+    whichever replace() runs second just overwrites cache_path cleanly, no exception, no
+    orphaned .tmp file left behind."""
+    from concurrent.futures import ThreadPoolExecutor
+    from app.routes.file_routes import _write_thumb_cache_atomically
+
+    cache_path = tmp_path / "cache" / "abc123.jpg"
+    cache_path.parent.mkdir(parents=True)
+
+    payload_a = b"writer-A-thumbnail-bytes"
+    payload_b = b"writer-B-thumbnail-bytes"
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        fut_a = pool.submit(_write_thumb_cache_atomically, cache_path, payload_a)
+        fut_b = pool.submit(_write_thumb_cache_atomically, cache_path, payload_b)
+        fut_a.result()
+        fut_b.result()
+
+    assert cache_path.exists()
+    assert cache_path.read_bytes() in (payload_a, payload_b)
+    assert list(cache_path.parent.glob("*.tmp")) == [], "no orphaned tmp file should remain"

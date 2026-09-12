@@ -1408,6 +1408,27 @@ def _thumb_cache_path(resolved: Path, mtime: float, size: int) -> Path:
     return settings.data_dir / "thumb_cache" / f"{key}.jpg"
 
 
+def _write_thumb_cache_atomically(cache_path: Path, data: bytes) -> None:
+    """Write *data* to *cache_path* atomically, safe against a second writer targeting the
+    SAME cache_path at the same time -- e.g. an on-demand thumbnail request racing the
+    post-upload pregenerate for the same file+size (_pregenerate_video_thumbnail). Both used
+    to build the tmp name as `cache_path.with_suffix(".tmp")`: a fixed, shared name, so
+    whichever writer's `tmp.replace(cache_path)` ran first already consumed (renamed away) the
+    tmp file, and the second writer's replace() then raised FileNotFoundError. A unique name
+    per writer, still colocated in the same directory for an atomic same-filesystem rename,
+    removes the collision entirely.
+    """
+    fd, tmp_name = tempfile.mkstemp(dir=cache_path.parent, prefix=f".{cache_path.stem}.", suffix=".tmp")
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+        tmp.replace(cache_path)
+    except Exception:
+        tmp.unlink(missing_ok=True)
+        raise
+
+
 async def _generate_image_thumbnail(resolved: Path, size: int) -> bytes:
     """Generate a JPEG thumbnail from an image using Pillow.
 
@@ -1515,9 +1536,7 @@ async def _thumbnail_response(resolved: Path, size: int, log_ref: str) -> Respon
 
     try:
         cache_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = cache_path.with_suffix(".tmp")
-        tmp.write_bytes(data)
-        tmp.replace(cache_path)
+        _write_thumb_cache_atomically(cache_path, data)
     except Exception as exc:
         logger.error("Failed to write thumbnail cache %s: %s", cache_path, exc)
 
@@ -1547,9 +1566,7 @@ async def _pregenerate_video_thumbnail(resolved: Path) -> None:
             return
         data = await _generate_video_thumbnail(resolved, size)
         cache_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = cache_path.with_suffix(".tmp")
-        tmp.write_bytes(data)
-        tmp.replace(cache_path)
+        _write_thumb_cache_atomically(cache_path, data)
     except Exception as exc:
         logger.warning("thumbnail_pregenerate_failed path=%s error=%s", resolved, exc)
 
